@@ -1,9 +1,12 @@
 # ============================================
 # 第一阶段：构建前端静态资源
 # ============================================
+ARG APP_VERSION=dev
 FROM node:20-slim AS frontend-builder
 
 WORKDIR /frontend
+ARG APP_VERSION
+ENV VITE_APP_VERSION=${APP_VERSION}
 
 # 配置 npm 使用中国镜像源
 RUN npm config set registry https://registry.npmmirror.com
@@ -26,6 +29,8 @@ RUN npm run build
 # 第二阶段：构建最终镜像（后端 + nginx）
 # ============================================
 FROM python:3.11-slim
+ARG APP_VERSION
+ENV APP_VERSION=${APP_VERSION}
 
 # 配置 apt 使用中国镜像源
 RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources && \

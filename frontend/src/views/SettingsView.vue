@@ -21,6 +21,10 @@
             <!-- Add other settings links here in the future -->
           </ul>
         </nav>
+        <div class="mt-6 pt-4 border-t border-gray-200">
+          <p class="text-xs text-gray-500">镜像版本</p>
+          <p class="mt-1 text-xs font-mono text-gray-700">{{ appVersion }}</p>
+        </div>
       </div>
 
       <!-- Main Content -->
@@ -33,4 +37,6 @@
 
 <script setup lang="ts">
 import LLMSettings from '@/components/LLMSettings.vue';
+
+const appVersion = ((import.meta.env.VITE_APP_VERSION as string | undefined)?.trim()) || 'dev';
 </script>

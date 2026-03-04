@@ -1,4 +1,4 @@
-﻿name: 构建并发布 Docker 镜像 (自动补丁号 +1)
+name: 构建并发布 Docker 镜像 (自动补丁号 +1)
 
 on:
   push:
@@ -124,13 +124,13 @@ jobs:
           context: .
           file: ./deploy/Dockerfile
           push: true
+          pull: true
+          no-cache: true
           tags: |
             ${{ steps.ver.outputs.image_repo }}:${{ steps.ver.outputs.version }}
             ${{ steps.ver.outputs.image_repo }}:latest
           build-args: |
             APP_VERSION=${{ steps.ver.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: 生成中文发布摘要
         shell: bash
