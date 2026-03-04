@@ -5,6 +5,7 @@
 """
 import json
 import logging
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,10 +18,131 @@ from ...schemas.user import UserInDB
 from ...services.llm_service import LLMService
 from ...services.novel_service import NovelService
 from ...services.prompt_service import PromptService
-from ...utils.json_utils import remove_think_tags, unwrap_markdown_json
+from ...utils.json_utils import remove_think_tags, sanitize_json_like_text, unwrap_markdown_json
 
 router = APIRouter(prefix="/api/optimizer", tags=["Optimizer"])
 logger = logging.getLogger(__name__)
+
+
+_OPTIMIZED_FIELD_RE = re.compile(
+    r'"optimized_content"\s*:\s*"(?P<value>(?:\\.|[^"\\])*)"',
+    re.DOTALL,
+)
+_NOTES_FIELD_RE = re.compile(
+    r'"optimization_notes"\s*:\s*"(?P<value>(?:\\.|[^"\\])*)"',
+    re.DOTALL,
+)
+
+
+def _decode_json_string_fragment(fragment: str) -> Optional[str]:
+    """将 JSON 字符串片段解码为普通文本。"""
+    if not fragment:
+        return None
+    try:
+        return json.loads(f'"{fragment}"')
+    except Exception:
+        fallback = fragment.replace('\\"', '"').replace("\\n", "\n").replace("\\t", "\t")
+        return fallback
+
+
+def _load_optimizer_payload(text: str) -> Optional[dict]:
+    """尽量从文本中解析出包含 optimized_content 的 JSON 对象。"""
+    if not text:
+        return None
+
+    candidates = [text]
+    sanitized = sanitize_json_like_text(text)
+    if sanitized != text:
+        candidates.append(sanitized)
+
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except Exception:
+            continue
+
+        if isinstance(payload, dict):
+            if "optimized_content" in payload:
+                return payload
+            # 兼容被包裹在 data/result 字段内的结构
+            for nested in payload.values():
+                if isinstance(nested, dict) and "optimized_content" in nested:
+                    return nested
+    return None
+
+
+def _extract_field_by_regex(raw_text: str, pattern: re.Pattern[str]) -> Optional[str]:
+    match = pattern.search(raw_text)
+    if not match:
+        return None
+    return _decode_json_string_fragment(match.group("value"))
+
+
+def _normalize_optimizer_text(raw_text: Optional[str]) -> str:
+    """清理优化结果中的代码块和嵌套 JSON 包裹。"""
+    if not raw_text:
+        return ""
+
+    text = raw_text.strip()
+
+    # 仅在 markdown 代码块场景下做 unwrap，避免误截断普通正文里的花括号。
+    if text.startswith("```"):
+        text = unwrap_markdown_json(text).strip()
+
+    # 处理模型把完整 JSON 又塞进 optimized_content 的情况。
+    if '"optimized_content"' in text:
+        nested = _load_optimizer_payload(text)
+        if nested and isinstance(nested.get("optimized_content"), str):
+            nested_text = nested.get("optimized_content", "").strip()
+            if nested_text and nested_text != text:
+                return _normalize_optimizer_text(nested_text)
+
+    if text.startswith('"') and text.endswith('"'):
+        try:
+            decoded = json.loads(text)
+            if isinstance(decoded, str):
+                text = decoded.strip()
+        except Exception:
+            pass
+
+    return text
+
+
+def _parse_optimizer_response(raw_response: str) -> tuple[str, str]:
+    """解析优化模型响应，尽可能提取出干净正文与说明。"""
+    cleaned = remove_think_tags(raw_response)
+    candidates: list[str] = []
+
+    normalized = unwrap_markdown_json(cleaned)
+    if normalized:
+        candidates.append(normalized)
+
+    for match in re.finditer(r"```(?:json|JSON)?\s*(.*?)\s*```", cleaned, re.DOTALL):
+        block = (match.group(1) or "").strip()
+        if block and block not in candidates:
+            candidates.append(block)
+
+    if cleaned and cleaned not in candidates:
+        candidates.append(cleaned)
+
+    for candidate in candidates:
+        payload = _load_optimizer_payload(candidate)
+        if not payload:
+            continue
+        content = _normalize_optimizer_text(payload.get("optimized_content"))
+        notes = _normalize_optimizer_text(payload.get("optimization_notes"))
+        if content:
+            return content, (notes or "优化完成")
+
+    # 兜底：从非标准文本里按字段名提取字符串值
+    extracted_content = _extract_field_by_regex(cleaned, _OPTIMIZED_FIELD_RE)
+    extracted_notes = _extract_field_by_regex(cleaned, _NOTES_FIELD_RE)
+    if extracted_content:
+        return _normalize_optimizer_text(extracted_content), (
+            _normalize_optimizer_text(extracted_notes) or "优化完成（已从非标准响应提取）"
+        )
+
+    return _normalize_optimizer_text(cleaned), "优化完成（响应格式非标准JSON）"
 
 
 class OptimizeRequest(BaseModel):
@@ -180,17 +302,7 @@ async def optimize_chapter(
             timeout=600.0,
         )
         
-        cleaned = remove_think_tags(response)
-        normalized = unwrap_markdown_json(cleaned)
-        
-        try:
-            result = json.loads(normalized)
-            optimized_content = result.get("optimized_content", cleaned)
-            optimization_notes = result.get("optimization_notes", "优化完成")
-        except json.JSONDecodeError:
-            # 如果无法解析JSON，将整个响应作为优化后的内容
-            optimized_content = cleaned
-            optimization_notes = "优化完成（响应格式非标准JSON）"
+        optimized_content, optimization_notes = _parse_optimizer_response(response)
         
         logger.info(
             "项目 %s 第 %s 章 %s 优化完成",

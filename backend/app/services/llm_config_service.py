@@ -74,6 +74,9 @@ class LLMConfigService:
         if "llm_provider_url" in data and data["llm_provider_url"] is not None:
             # HttpUrl 类型在 sqlite 中无法直接写入，需要提前转为字符串
             data["llm_provider_url"] = str(data["llm_provider_url"])
+        if "embedding_provider_url" in data and data["embedding_provider_url"] is not None:
+            # HttpUrl 类型在 sqlite 中无法直接写入，需要提前转为字符串
+            data["embedding_provider_url"] = str(data["embedding_provider_url"])
         if instance:
             await self.repo.update_fields(instance, **data)
         else:

@@ -256,11 +256,20 @@ class LLMService:
         model: Optional[str] = None,
     ) -> List[float]:
         """生成文本向量，用于章节 RAG 检索，支持 openai 与 ollama 双提供方。"""
-        provider = await self._get_config_value("embedding.provider") or "openai"
+        user_llm_config = await self.llm_repo.get_by_user(user_id) if user_id else None
+        user_embedding_model = user_llm_config.embedding_provider_model if user_llm_config else None
+        user_embedding_base_url = user_llm_config.embedding_provider_url if user_llm_config else None
+        user_llm_base_url = user_llm_config.llm_provider_url if user_llm_config else None
+
+        provider = await self._get_config_value("embedding.provider") or "ollama"
         default_model = (
-            await self._get_config_value("ollama.embedding_model") or "nomic-embed-text:latest"
+            user_embedding_model
+            or await self._get_config_value("ollama.embedding_model")
+            or "nomic-embed-text:latest"
             if provider == "ollama"
-            else await self._get_config_value("embedding.model") or "text-embedding-3-large"
+            else user_embedding_model
+            or await self._get_config_value("embedding.model")
+            or "text-embedding-3-large"
         )
         target_model = model or default_model
 
@@ -270,7 +279,8 @@ class LLMService:
                 raise HTTPException(status_code=500, detail="缺少 Ollama 依赖，请先安装 ollama 包。")
 
             base_url = (
-                await self._get_config_value("ollama.embedding_base_url")
+                user_embedding_base_url
+                or await self._get_config_value("ollama.embedding_base_url")
                 or await self._get_config_value("embedding.base_url")
             )
             client = OllamaAsyncClient(host=base_url)
@@ -298,7 +308,12 @@ class LLMService:
         else:
             config = await self._resolve_llm_config(user_id)
             api_key = await self._get_config_value("embedding.api_key") or config["api_key"]
-            base_url = await self._get_config_value("embedding.base_url") or config.get("base_url")
+            base_url = (
+                user_embedding_base_url
+                or user_llm_base_url
+                or await self._get_config_value("embedding.base_url")
+                or config.get("base_url")
+            )
             client = AsyncOpenAI(api_key=api_key, base_url=base_url)
             try:
                 response = await client.embeddings.create(
@@ -334,7 +349,7 @@ class LLMService:
 
     async def get_embedding_dimension(self, model: Optional[str] = None) -> Optional[int]:
         """获取嵌入向量维度，优先返回缓存结果，其次读取配置。"""
-        provider = await self._get_config_value("embedding.provider") or "openai"
+        provider = await self._get_config_value("embedding.provider") or "ollama"
         default_model = (
             await self._get_config_value("ollama.embedding_model") or "nomic-embed-text:latest"
             if provider == "ollama"

@@ -332,12 +332,19 @@ const currentComponent = computed(() => {
 
 // Polling for chapter status updates
 const pollingTimer = ref<number | null>(null)
+const POLLING_INTERVAL_MS = 3000
+
+const requestChapterStatus = () => {
+  emit('fetchChapterStatus')
+}
 
 const startPolling = () => {
   stopPolling()
+  // 启动轮询前先立即拉取一次，减少“需手动刷新”的窗口期
+  requestChapterStatus()
   pollingTimer.value = window.setInterval(() => {
-    emit('fetchChapterStatus')
-  }, 10000)
+    requestChapterStatus()
+  }, POLLING_INTERVAL_MS)
 }
 
 const stopPolling = () => {
@@ -348,16 +355,28 @@ const stopPolling = () => {
 }
 
 watch(
-  () => [selectedChapter.value?.generation_status, props.evaluatingChapter, props.isSelectingVersion, props.selectedChapterNumber],
-  ([status, evaluating, selecting, chapterNumber]) => {
+  () => ({
+    status: selectedChapter.value?.generation_status,
+    chapterNumber: props.selectedChapterNumber,
+    versionsCount: selectedChapter.value?.versions?.length || 0,
+    hasContent: Boolean(selectedChapter.value?.content),
+  }),
+  ({ status, chapterNumber, versionsCount, hasContent }) => {
     if (chapterNumber === null) {
       stopPolling()
       return
     }
 
-    const isEvaluating = evaluating === chapterNumber
-    // Poll when generating, evaluating, or selecting a version
-    const needsPolling = status === 'generating' || status === 'evaluating' || status === 'selecting'
+    // 需要轮询的场景：
+    // 1) 生成/评审/选择中（状态推进）
+    // 2) 等待确认但版本列表还没同步（偶发后端延迟）
+    // 3) 已成功但正文暂未同步（避免必须手动刷新）
+    const needsPolling =
+      status === 'generating' ||
+      status === 'evaluating' ||
+      status === 'selecting' ||
+      (status === 'waiting_for_confirm' && versionsCount === 0) ||
+      (status === 'successful' && !hasContent)
 
     if (needsPolling) {
       startPolling()

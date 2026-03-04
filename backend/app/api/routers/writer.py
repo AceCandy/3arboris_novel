@@ -690,7 +690,17 @@ async def generate_chapter(
                 if isinstance(value, str):
                     return value
                 if isinstance(value, dict):
-                    for key in ("content", "chapter_content", "chapter_text", "text", "body", "story"):
+                    for key in (
+                        "content",
+                        "chapter_content",
+                        "chapter_text",
+                        "text",
+                        "body",
+                        "story",
+                        "chapter",
+                        "full_content",
+                        "optimized_content",
+                    ):
                         if value.get(key):
                             nested = _extract_text(value.get(key))
                             if nested:
@@ -711,8 +721,29 @@ async def generate_chapter(
             except Exception:
                 parsed_json = None
 
+            resolved_content: Optional[str] = extracted_text
+            if not resolved_content and isinstance(final_content, str):
+                stripped = final_content.strip()
+                if stripped:
+                    looks_like_json = (
+                        (stripped.startswith("{") and stripped.endswith("}"))
+                        or (stripped.startswith("[") and stripped.endswith("]"))
+                    )
+                    # 若是 JSON 且无法提取正文，视为无效输出；避免把结构化包装写入正文。
+                    if not looks_like_json or parsed_json is None:
+                        resolved_content = stripped
+
+            if not resolved_content:
+                logger.error(
+                    "项目 %s 第 %s 章版本 %s 未提取到正文: final_preview=%s",
+                    project_id,
+                    request.chapter_number,
+                    idx + 1,
+                    (final_content or "")[:400],
+                )
+
             return {
-                "content": extracted_text or final_content,
+                "content": resolved_content,
                 "parsed_json": parsed_json,
                 "guardrail": guardrail_metadata,
                 "chapter_mission": chapter_mission,
@@ -765,17 +796,35 @@ async def generate_chapter(
 
     contents: List[str] = []
     metadata: List[Dict] = []
-    for variant in raw_versions:
+    for version_idx, variant in enumerate(raw_versions, start=1):
         if isinstance(variant, dict):
-            if "content" in variant and isinstance(variant["content"], str):
-                contents.append(variant["content"])
-            elif "chapter_content" in variant:
-                contents.append(str(variant["chapter_content"]))
-            else:
-                contents.append(json.dumps(variant, ensure_ascii=False))
+            candidate = variant.get("content")
+            if isinstance(candidate, str):
+                candidate = candidate.strip()
+            if not candidate and "chapter_content" in variant and variant["chapter_content"]:
+                candidate = str(variant["chapter_content"]).strip()
+            if not candidate:
+                logger.error(
+                    "项目 %s 第 %s 章版本 %s 生成结果缺少正文内容，metadata_keys=%s",
+                    project_id,
+                    request.chapter_number,
+                    version_idx,
+                    list(variant.keys()),
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"生成章节第 {version_idx} 个版本失败：模型未返回有效正文，请重试。",
+                )
+            contents.append(candidate)
             metadata.append(variant)
         else:
-            contents.append(str(variant))
+            text = str(variant).strip()
+            if not text:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"生成章节第 {version_idx} 个版本失败：模型返回空内容，请重试。",
+                )
+            contents.append(text)
             metadata.append({"raw": variant})
 
     # ========== 8. AI Review: 自动评审多版本 ==========

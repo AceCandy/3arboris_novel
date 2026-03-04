@@ -56,6 +56,9 @@ async def init_db() -> None:
                 continue
             existing = await session.get(SystemConfig, entry.key)
             if existing:
+                if entry.key == "embedding.provider" and (existing.value or "").strip().lower() == "openai":
+                    # 升级默认嵌入提供方到 ollama，避免沿用旧版本默认值导致请求路径不匹配。
+                    existing.value = value
                 if entry.description and existing.description != entry.description:
                     existing.description = entry.description
                 continue
@@ -113,9 +116,19 @@ async def _ensure_schema_updates() -> None:
     async with engine.begin() as conn:
         def _upgrade(sync_conn):
             inspector = inspect(sync_conn)
-            columns = {col["name"] for col in inspector.get_columns("chapter_outlines")}
-            if "metadata" not in columns:
-                sync_conn.execute(text("ALTER TABLE chapter_outlines ADD COLUMN metadata JSON"))
+            table_names = set(inspector.get_table_names())
+
+            if "chapter_outlines" in table_names:
+                columns = {col["name"] for col in inspector.get_columns("chapter_outlines")}
+                if "metadata" not in columns:
+                    sync_conn.execute(text("ALTER TABLE chapter_outlines ADD COLUMN metadata JSON"))
+
+            if "llm_configs" in table_names:
+                llm_columns = {col["name"] for col in inspector.get_columns("llm_configs")}
+                if "embedding_provider_url" not in llm_columns:
+                    sync_conn.execute(text("ALTER TABLE llm_configs ADD COLUMN embedding_provider_url TEXT"))
+                if "embedding_provider_model" not in llm_columns:
+                    sync_conn.execute(text("ALTER TABLE llm_configs ADD COLUMN embedding_provider_model TEXT"))
         await conn.run_sync(_upgrade)
 
 

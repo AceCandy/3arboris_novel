@@ -132,6 +132,8 @@ CREATE TABLE IF NOT EXISTS llm_configs (
     llm_provider_url TEXT NULL,
     llm_provider_api_key TEXT NULL,
     llm_provider_model TEXT NULL,
+    embedding_provider_url TEXT NULL,
+    embedding_provider_model TEXT NULL,
     CONSTRAINT fk_llm_configs_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 

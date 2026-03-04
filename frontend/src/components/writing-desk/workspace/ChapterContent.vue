@@ -309,6 +309,96 @@ const exportChapterAsTxt = (chapter?: Chapter | null) => {
   URL.revokeObjectURL(url)
 }
 
+const tryParseOptimizerPayload = (rawText: string): Record<string, unknown> | null => {
+  if (!rawText) return null
+  const text = rawText.trim()
+  if (!text) return null
+
+  const candidates: string[] = [text]
+  const fenceMatch = text.match(/```(?:json|JSON)?\s*([\s\S]*?)\s*```/)
+  if (fenceMatch?.[1]) {
+    const fenced = fenceMatch[1].trim()
+    if (fenced && fenced !== text) candidates.unshift(fenced)
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return null
+}
+
+const decodeJsonStringFragment = (fragment: string): string => {
+  try {
+    return JSON.parse(`"${fragment}"`) as string
+  } catch {
+    return fragment
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+  }
+}
+
+const extractJsonField = (rawText: string, field: 'optimized_content' | 'optimization_notes'): string | null => {
+  const pattern = new RegExp(`"${field}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`, 's')
+  const match = rawText.match(pattern)
+  if (!match?.[1]) return null
+  return decodeJsonStringFragment(match[1])
+}
+
+const normalizeOptimizeResult = (
+  contentRaw: string,
+  notesRaw: string
+): { content: string; notes: string } => {
+  let content = (contentRaw || '').trim()
+  let notes = (notesRaw || '').trim()
+  const seen = new Set<string>()
+
+  // 如果 optimized_content 里又套了一层 JSON，递归解开（最多 2 层，防止死循环）
+  for (let i = 0; i < 2; i++) {
+    if (!content || seen.has(content)) break
+    seen.add(content)
+    const payload = tryParseOptimizerPayload(content)
+    if (!payload) break
+    const nestedContent = payload.optimized_content
+    if (typeof nestedContent !== 'string' || !nestedContent.trim()) break
+    content = nestedContent.trim()
+    if (!notes && typeof payload.optimization_notes === 'string') {
+      notes = payload.optimization_notes.trim()
+    }
+  }
+
+  // 非标准响应兜底：从文本中按字段提取
+  if (content.includes('"optimized_content"')) {
+    const extractedContent = extractJsonField(content, 'optimized_content')
+    if (extractedContent?.trim()) {
+      content = extractedContent.trim()
+    }
+    if (!notes) {
+      const extractedNotes = extractJsonField(contentRaw, 'optimization_notes')
+      if (extractedNotes?.trim()) {
+        notes = extractedNotes.trim()
+      }
+    }
+  }
+
+  const fenced = content.match(/```(?:json|JSON)?\s*([\s\S]*?)\s*```/)
+  if (fenced?.[1]) {
+    content = fenced[1].trim()
+  }
+
+  return {
+    content,
+    notes: notes || '优化完成'
+  }
+}
+
 const startOptimize = async () => {
   if (!selectedDimension.value || !props.projectId) {
     globalAlert.showError('请选择优化维度')
@@ -326,8 +416,9 @@ const startOptimize = async () => {
       additional_notes: additionalNotes.value || undefined
     })
 
-    optimizedContent.value = result.optimized_content
-    optimizeResultNotes.value = result.optimization_notes
+    const normalized = normalizeOptimizeResult(result.optimized_content, result.optimization_notes)
+    optimizedContent.value = normalized.content
+    optimizeResultNotes.value = normalized.notes
     showOptimizeResult.value = true
   } catch (error: any) {
     console.error('优化失败:', error)

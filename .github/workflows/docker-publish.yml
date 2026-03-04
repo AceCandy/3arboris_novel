@@ -1,0 +1,151 @@
+﻿name: 构建并发布 Docker 镜像 (自动补丁号 +1)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+concurrency:
+  group: docker-publish-main
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  # 默认镜像仓库。可通过仓库变量 IMAGE_REPO 覆盖，例如：woshidayingxiong77240/arboris-novel
+  DEFAULT_IMAGE_REPO: woshidayingxiong77240/arboris-novel
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: 计算下一版本号
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE_REPO="${IMAGE_REPO:-}"
+          if [[ -z "${IMAGE_REPO}" ]]; then
+            if [[ -n "${{ vars.IMAGE_REPO }}" ]]; then
+              IMAGE_REPO="${{ vars.IMAGE_REPO }}"
+            else
+              IMAGE_REPO="${DEFAULT_IMAGE_REPO}"
+            fi
+          fi
+
+          git fetch --tags origin
+
+          latest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
+          if [[ -z "${latest_tag}" ]]; then
+            latest_tag="$(git tag -l '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
+          fi
+
+          base_version=""
+          if [[ -n "${latest_tag}" ]]; then
+            base_version="${latest_tag#v}"
+          elif [[ -f VERSION ]]; then
+            base_version="$(cat VERSION | tr -d '\r\n' | xargs)"
+          else
+            base_version="0.1.0"
+          fi
+
+          if ! [[ "${base_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid base version: '${base_version}'. Expected X.Y.Z."
+            exit 1
+          fi
+
+          IFS='.' read -r major minor patch <<<"${base_version}"
+
+          next_patch=$((patch + 1))
+          next_version="${major}.${minor}.${next_patch}"
+          while git rev-parse -q --verify "refs/tags/v${next_version}" >/dev/null; do
+            next_patch=$((next_patch + 1))
+            next_version="${major}.${minor}.${next_patch}"
+          done
+
+          echo "Next version: ${next_version}"
+          echo "version=${next_version}" >> "${GITHUB_OUTPUT}"
+          echo "image_repo=${IMAGE_REPO}" >> "${GITHUB_OUTPUT}"
+
+      - name: 创建并推送 Git 标签
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${{ steps.ver.outputs.version }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "v${v}" -m "Release v${v}"
+          git push origin "v${v}"
+
+      - name: 校验 Docker Hub 凭据
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME || vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${DOCKERHUB_USERNAME}" ]]; then
+            echo "缺少 Docker Hub 用户名。"
+            echo "请在 GitHub Actions 中设置 Secret: DOCKERHUB_USERNAME，或 Variable: DOCKERHUB_USERNAME。"
+            exit 1
+          fi
+
+          if [[ -z "${DOCKERHUB_TOKEN}" ]]; then
+            echo "缺少 Docker Hub Token。"
+            echo "请在 GitHub Actions 中设置 Secret: DOCKERHUB_TOKEN (Docker Hub access token)。"
+            exit 1
+          fi
+
+      - name: 登录 Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME || vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 配置 Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 构建并推送镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./deploy/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ver.outputs.image_repo }}:${{ steps.ver.outputs.version }}
+            ${{ steps.ver.outputs.image_repo }}:latest
+          build-args: |
+            APP_VERSION=${{ steps.ver.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 生成中文发布摘要
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## 发布摘要"
+            echo ""
+            echo "- 版本号: \`${{ steps.ver.outputs.version }}\`"
+            echo "- 镜像仓库: \`${{ steps.ver.outputs.image_repo }}\`"
+            echo "- 推送标签:"
+            echo "  - \`${{ steps.ver.outputs.image_repo }}:${{ steps.ver.outputs.version }}\`"
+            echo "  - \`${{ steps.ver.outputs.image_repo }}:latest\`"
+            echo ""
+            echo "说明:"
+            echo "- 上面这段是本工作流生成的中文摘要。"
+            echo "- docker/build-push-action 的构建摘要通常为英文，无法在工作流内完全替换为中文。"
+          } >> "${GITHUB_STEP_SUMMARY}"
