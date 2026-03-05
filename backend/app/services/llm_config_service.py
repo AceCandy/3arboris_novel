@@ -96,7 +96,11 @@ class LLMConfigService:
             # HttpUrl 类型在 sqlite 中无法直接写入，需要提前转为字符串
             data["embedding_provider_url"] = str(data["embedding_provider_url"])
         if instance:
-            await self.repo.update_fields(instance, **data)
+            # Keep partial-update semantics via exclude_unset, while still allowing
+            # explicit null values to clear persisted fields.
+            for key, value in data.items():
+                setattr(instance, key, value)
+            await self.session.flush()
         else:
             instance = LLMConfig(user_id=user_id, **data)
             await self.repo.add(instance)

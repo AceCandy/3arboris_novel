@@ -23,7 +23,16 @@
         </nav>
         <div class="mt-6 pt-4 border-t border-gray-200">
           <p class="text-xs text-gray-500">镜像版本</p>
-          <p class="mt-1 text-xs font-mono text-gray-700">{{ appVersion }}</p>
+          <p v-if="remoteVersionCheckFailed" class="mt-1 text-xs text-red-600">
+            远程版本获取失败
+          </p>
+          <p v-if="hasNewVersion" class="mt-1 text-xs font-medium text-amber-600">有新版本</p>
+          <p v-if="hasNewVersion" class="mt-1 text-xs font-mono text-gray-700">
+            远程：{{ remoteVersion }}
+          </p>
+          <p class="mt-1 text-xs font-mono text-gray-700">
+            {{ hasNewVersion ? `本地：${localVersion}` : localVersion }}
+          </p>
         </div>
       </div>
 
@@ -36,7 +45,28 @@
 </template>
 
 <script setup lang="ts">
+import { computed, onMounted, ref } from 'vue';
 import LLMSettings from '@/components/LLMSettings.vue';
+import { getRemoteVersion, normalizeComparableVersion } from '@/api/version';
 
-const appVersion = ((import.meta.env.VITE_APP_VERSION as string | undefined)?.trim()) || 'dev';
+const localVersion = ((import.meta.env.VITE_APP_VERSION as string | undefined)?.trim()) || 'dev';
+const remoteVersion = ref<string | null>(null);
+const remoteVersionCheckFailed = ref(false);
+
+const hasNewVersion = computed(() => {
+  if (!remoteVersion.value) {
+    return false;
+  }
+  return normalizeComparableVersion(remoteVersion.value) !== normalizeComparableVersion(localVersion);
+});
+
+onMounted(async () => {
+  try {
+    remoteVersion.value = await getRemoteVersion();
+    remoteVersionCheckFailed.value = !remoteVersion.value;
+  } catch (error) {
+    remoteVersionCheckFailed.value = true;
+    console.error('Failed to fetch remote version:', error);
+  }
+});
 </script>

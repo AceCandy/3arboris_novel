@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
 _PREFERRED_CONTENT_KEYS: tuple[str, ...] = (
@@ -106,9 +107,13 @@ from ..schemas.novel import (
     NovelSectionType,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class NovelService:
     """小说项目服务，基于拆表后的结构提供聚合与业务操作。"""
+
+    STALE_IN_PROGRESS_TIMEOUT = timedelta(minutes=10)
 
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -173,6 +178,8 @@ class NovelService:
         )
         chapter_result = await self.session.execute(chapter_stmt)
         chapter = chapter_result.scalars().first()
+
+        await self._auto_fail_stale_in_progress_chapters(project_id, [chapter] if chapter else [])
 
         outline_stmt = select(ChapterOutline).where(
             ChapterOutline.project_id == project_id,
@@ -590,6 +597,8 @@ class NovelService:
         return self._build_chapter_schema(project, chapter_number)
 
     async def _serialize_project(self, project: NovelProject) -> NovelProjectSchema:
+        await self._auto_fail_stale_in_progress_chapters(project.id, list(project.chapters))
+
         conversations = [
             {"role": convo.role, "content": convo.content}
             for convo in sorted(project.conversations, key=lambda c: c.seq)
@@ -619,6 +628,58 @@ class NovelService:
             blueprint=blueprint_schema,
             chapters=chapters_schema,
         )
+
+    @staticmethod
+    def _to_utc_if_possible(value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            # SQLite 常见为 naive 时间；updated_at 默认按 UTC 写入。
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    async def _auto_fail_stale_in_progress_chapters(self, project_id: str, chapters: List[Chapter]) -> None:
+        if not chapters:
+            return
+
+        now_utc = datetime.now(timezone.utc)
+        changed = False
+
+        for chapter in chapters:
+            if chapter is None:
+                continue
+            if chapter.status not in (
+                ChapterGenerationStatus.GENERATING.value,
+                ChapterGenerationStatus.EVALUATING.value,
+                ChapterGenerationStatus.SELECTING.value,
+            ):
+                continue
+
+            updated_at_utc = self._to_utc_if_possible(chapter.updated_at)
+            started_at_utc = self._to_utc_if_possible(chapter.generation_started_at)
+            reference_ts = updated_at_utc or started_at_utc
+            if reference_ts is None:
+                continue
+
+            if now_utc - reference_ts <= self.STALE_IN_PROGRESS_TIMEOUT:
+                continue
+
+            prev_status = chapter.status
+            chapter.status = ChapterGenerationStatus.FAILED.value
+            chapter.generation_progress = 0
+            chapter.generation_step = "failed"
+            chapter.generation_step_index = 0
+            # 仅在缺省时兜底，避免覆盖已有流程总步数
+            chapter.generation_step_total = chapter.generation_step_total or 0
+            changed = True
+            self.session.add(chapter)
+            logger.warning(
+                f"检测到章节生成状态超时，自动标记失败: project_id={project_id} "
+                f"chapter_number={chapter.chapter_number} prev_status={prev_status}"
+            )
+
+        if changed:
+            await self.session.commit()
 
     async def _touch_project(self, project_id: str) -> None:
         await self.session.execute(

@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import HTTPException, status
-from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalServerError
+from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalServerError, PermissionDeniedError
 
 from ..core.config import settings
 from ..repositories.llm_config_repository import LLMConfigRepository
@@ -174,6 +174,16 @@ class LLMService:
                 detail = "无法连接到 AI 服务，请稍后重试"
             logger.error(
                 "LLM stream failed: model=%s user_id=%s detail=%s",
+                config.get("model"),
+                user_id,
+                detail,
+                exc_info=exc,
+            )
+            raise HTTPException(status_code=503, detail=detail) from exc
+        except PermissionDeniedError as exc:
+            detail = "AI 服务拒绝访问（可能被上游安全策略拦截），请稍后重试或更换可用 API 地址"
+            logger.error(
+                "LLM stream permission denied: model=%s user_id=%s detail=%s",
                 config.get("model"),
                 user_id,
                 detail,

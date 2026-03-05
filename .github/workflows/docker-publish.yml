@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - release-metadata/**
   workflow_dispatch: {}
 
 concurrency:
@@ -45,50 +47,6 @@ jobs:
             fi
           fi
 
-          # 先从 Docker Hub 获取当前最新的语义化版本标签（X.Y.Z 或 vX.Y.Z）
-          docker_latest_version=""
-          docker_tags_api="https://hub.docker.com/v2/repositories/${IMAGE_REPO}/tags?page_size=100"
-          next_page="${docker_tags_api}"
-
-          if ! command -v jq >/dev/null 2>&1; then
-            echo "警告: runner 未安装 jq，将回退到 Git tag/VERSION。"
-            next_page=""
-          fi
-
-          while [[ -n "${next_page}" ]]; do
-            if ! page_json="$(curl -fsSL --retry 3 --retry-delay 2 "${next_page}")"; then
-              echo "警告: 无法从 Docker Hub 获取标签，将回退到 Git tag/VERSION。"
-              docker_latest_version=""
-              break
-            fi
-
-            page_latest="$(
-              echo "${page_json}" \
-                | jq -r '.results[].name // empty' \
-                | grep -E '^(v)?[0-9]+\.[0-9]+\.[0-9]+$' \
-                | sed 's/^v//' \
-                | sort -V \
-                | tail -n 1 || true
-            )"
-
-            if [[ -n "${page_latest}" ]]; then
-              docker_latest_version="$(
-                printf '%s\n%s\n' "${docker_latest_version}" "${page_latest}" \
-                  | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-                  | sort -V \
-                  | tail -n 1
-              )"
-            fi
-
-            next_page="$(echo "${page_json}" | jq -r '.next // empty')"
-          done
-
-          if [[ -n "${docker_latest_version}" ]]; then
-            echo "Docker Hub 最新版本: ${docker_latest_version}"
-          else
-            echo "Docker Hub 未找到可用语义化版本标签。"
-          fi
-
           git fetch --tags origin
 
           latest_tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
@@ -97,9 +55,7 @@ jobs:
           fi
 
           base_version=""
-          if [[ -n "${docker_latest_version}" ]]; then
-            base_version="${docker_latest_version}"
-          elif [[ -n "${latest_tag}" ]]; then
+          if [[ -n "${latest_tag}" ]]; then
             base_version="${latest_tag#v}"
           elif [[ -f VERSION ]]; then
             base_version="$(cat VERSION | tr -d '\r\n' | xargs)"
@@ -180,6 +136,53 @@ jobs:
           build-args: |
             APP_VERSION=${{ steps.ver.outputs.version }}
 
+      - name: 生成版本信息 JSON
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p release-metadata
+
+          build_time_beijing="$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S %:z')"
+          build_time_iso_beijing="$(TZ=Asia/Shanghai date '+%Y-%m-%dT%H:%M:%S%:z')"
+
+          cat > release-metadata/version-info.json <<EOF
+          {
+            "version": "${{ steps.ver.outputs.version }}",
+            "git_tag": "v${{ steps.ver.outputs.version }}",
+            "image_repo": "${{ steps.ver.outputs.image_repo }}",
+            "image_tags": [
+              "${{ steps.ver.outputs.image_repo }}:${{ steps.ver.outputs.version }}",
+              "${{ steps.ver.outputs.image_repo }}:latest"
+            ],
+            "build_time_beijing": "${build_time_beijing}",
+            "build_time_iso_beijing": "${build_time_iso_beijing}",
+            "timezone": "Asia/Shanghai",
+            "repository": "${{ github.repository }}",
+            "commit_sha": "${{ github.sha }}",
+            "run_id": "${{ github.run_id }}",
+            "source": "github-actions"
+          }
+          EOF
+
+      - name: 提交版本信息 JSON 到仓库
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${{ steps.ver.outputs.version }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add release-metadata/version-info.json
+          if git diff --cached --quiet; then
+            echo "release-metadata/version-info.json 无变化，跳过提交。"
+            exit 0
+          fi
+
+          git commit -m "chore(release): update version metadata v${v} [skip ci]"
+          git push origin HEAD:main
+
       - name: 生成中文发布摘要
         shell: bash
         run: |
@@ -192,6 +195,7 @@ jobs:
             echo "- 推送标签:"
             echo "  - \`${{ steps.ver.outputs.image_repo }}:${{ steps.ver.outputs.version }}\`"
             echo "  - \`${{ steps.ver.outputs.image_repo }}:latest\`"
+            echo "- 元数据文件: \`release-metadata/version-info.json\`"
             echo ""
             echo "说明:"
             echo "- 上面这段是本工作流生成的中文摘要。"

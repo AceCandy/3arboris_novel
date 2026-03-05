@@ -511,6 +511,27 @@ async def generate_chapter(
             chapter.status = status
         await session.commit()
 
+    async def _mark_generation_failed() -> None:
+        """确保异常后章节状态统一收敛到 failed，避免前端刷新后长期卡在 generating。"""
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+
+        try:
+            chapter.status = "failed"
+            chapter.generation_progress = 0
+            chapter.generation_step = "failed"
+            chapter.generation_step_index = 0
+            chapter.generation_step_total = generation_step_total
+            await session.commit()
+        except Exception:
+            logger.exception(
+                "项目 %s 第 %s 章标记 failed 失败",
+                project_id,
+                request.chapter_number,
+            )
+
     chapter.real_summary = None
     chapter.selected_version_id = None
     chapter.status = "generating"
@@ -536,12 +557,25 @@ async def generate_chapter(
         if existing.selected_version is None or not existing.selected_version.content:
             continue
         if not existing.real_summary:
-            summary = await llm_service.get_summary(
-                existing.selected_version.content,
-                temperature=0.15,
-                user_id=current_user.id,
-                timeout=180.0,
-            )
+            try:
+                summary = await llm_service.get_summary(
+                    existing.selected_version.content,
+                    temperature=0.15,
+                    user_id=current_user.id,
+                    timeout=180.0,
+                )
+            except HTTPException:
+                await _mark_generation_failed()
+                raise
+            except Exception as exc:
+                logger.exception(
+                    "项目 %s 第 %s 章生成历史摘要失败: %s",
+                    project_id,
+                    request.chapter_number,
+                    exc,
+                )
+                await _mark_generation_failed()
+                raise HTTPException(status_code=500, detail="生成章节失败：历史摘要阶段异常") from exc
             existing.real_summary = remove_think_tags(summary)
             await session.commit()
         completed_chapters.append({
@@ -557,8 +591,22 @@ async def generate_chapter(
 
     await _update_generation_progress(progress=15, step="context_prep", step_index=1)
 
-    project_schema = await novel_service._serialize_project(project)
-    blueprint_dict = project_schema.blueprint.model_dump()
+    try:
+        # 这里只需要蓝图数据，避免依赖整项目序列化流程导致生成前失败。
+        blueprint_schema = novel_service._build_blueprint_schema(project)
+        blueprint_dict = blueprint_schema.model_dump()
+    except HTTPException:
+        await _mark_generation_failed()
+        raise
+    except Exception as exc:
+        logger.exception(
+            "项目 %s 第 %s 章构建蓝图上下文失败: %s",
+            project_id,
+            request.chapter_number,
+            exc,
+        )
+        await _mark_generation_failed()
+        raise HTTPException(status_code=500, detail="生成章节失败：加载项目信息异常") from exc
 
     # 处理关系字段名
     if "relationships" in blueprint_dict and blueprint_dict["relationships"]:
@@ -577,19 +625,32 @@ async def generate_chapter(
 
     # ========== 2. L2 Director: 生成章节导演脚本 ==========
     await _update_generation_progress(progress=22, step="director_mission", step_index=2)
-    chapter_mission = await _generate_chapter_mission(
-        llm_service=llm_service,
-        prompt_service=prompt_service,
-        blueprint_dict=blueprint_dict,
-        previous_summary=previous_summary_text,
-        previous_tail=previous_tail_excerpt,
-        outline_title=outline_title,
-        outline_summary=outline_summary,
-        writing_notes=writing_notes,
-        introduced_characters=[],  # 将在下一步填充
-        all_characters=all_characters,
-        user_id=current_user.id,
-    )
+    try:
+        chapter_mission = await _generate_chapter_mission(
+            llm_service=llm_service,
+            prompt_service=prompt_service,
+            blueprint_dict=blueprint_dict,
+            previous_summary=previous_summary_text,
+            previous_tail=previous_tail_excerpt,
+            outline_title=outline_title,
+            outline_summary=outline_summary,
+            writing_notes=writing_notes,
+            introduced_characters=[],  # 将在下一步填充
+            all_characters=all_characters,
+            user_id=current_user.id,
+        )
+    except HTTPException:
+        await _mark_generation_failed()
+        raise
+    except Exception as exc:
+        logger.exception(
+            "项目 %s 第 %s 章生成导演脚本失败: %s",
+            project_id,
+            request.chapter_number,
+            exc,
+        )
+        await _mark_generation_failed()
+        raise HTTPException(status_code=500, detail="生成章节失败：导演脚本阶段异常") from exc
 
     # 从导演脚本中提取允许登场的新角色
     allowed_new_characters = []
@@ -597,15 +658,25 @@ async def generate_chapter(
         allowed_new_characters = chapter_mission.get("allowed_new_characters", [])
 
     # ========== 3. 信息可见性过滤 ==========
-    visibility_context = context_builder.build_visibility_context(
-        blueprint=blueprint_dict,
-        completed_summaries=completed_summaries,
-        previous_tail=previous_tail_excerpt,
-        outline_title=outline_title,
-        outline_summary=outline_summary,
-        writing_notes=writing_notes,
-        allowed_new_characters=allowed_new_characters,
-    )
+    try:
+        visibility_context = context_builder.build_visibility_context(
+            blueprint=blueprint_dict,
+            completed_summaries=completed_summaries,
+            previous_tail=previous_tail_excerpt,
+            outline_title=outline_title,
+            outline_summary=outline_summary,
+            writing_notes=writing_notes,
+            allowed_new_characters=allowed_new_characters,
+        )
+    except Exception as exc:
+        logger.exception(
+            "项目 %s 第 %s 章可见性上下文构建失败: %s",
+            project_id,
+            request.chapter_number,
+            exc,
+        )
+        await _mark_generation_failed()
+        raise HTTPException(status_code=500, detail="生成章节失败：上下文构建异常") from exc
 
     writer_blueprint = visibility_context["writer_blueprint"]
     forbidden_characters = visibility_context["forbidden_characters"]
@@ -637,20 +708,43 @@ async def generate_chapter(
     if request.writing_notes:
         query_parts.append(request.writing_notes)
     rag_query = "\n".join(part for part in query_parts if part)
-    rag_context = await context_service.retrieve_for_generation(
-        project_id=project_id,
-        query_text=rag_query or outline.title or outline.summary or "",
-        user_id=current_user.id,
-    )
+    try:
+        rag_context = await context_service.retrieve_for_generation(
+            project_id=project_id,
+            query_text=rag_query or outline.title or outline.summary or "",
+            user_id=current_user.id,
+        )
+    except HTTPException:
+        await _mark_generation_failed()
+        raise
+    except Exception as exc:
+        logger.exception(
+            "项目 %s 第 %s 章 RAG 检索失败: %s",
+            project_id,
+            request.chapter_number,
+            exc,
+        )
+        await _mark_generation_failed()
+        raise HTTPException(status_code=500, detail="生成章节失败：检索上下文阶段异常") from exc
     await _update_generation_progress(progress=48, step="rag_retrieval", step_index=3)
     rag_chunks_text = "\n\n".join(rag_context.chunk_texts()) if rag_context.chunks else "未检索到章节片段"
     rag_summaries_text = "\n".join(rag_context.summary_lines()) if rag_context.summaries else "未检索到章节摘要"
 
     # ========== 5. 构建写作提示词 ==========
     # 优先使用 writing_v2，fallback 到 writing
-    writer_prompt = await prompt_service.get_prompt("writing_v2")
-    if not writer_prompt:
-        writer_prompt = await prompt_service.get_prompt("writing")
+    try:
+        writer_prompt = await prompt_service.get_prompt("writing_v2")
+        if not writer_prompt:
+            writer_prompt = await prompt_service.get_prompt("writing")
+    except Exception as exc:
+        logger.exception(
+            "项目 %s 第 %s 章加载写作提示词失败: %s",
+            project_id,
+            request.chapter_number,
+            exc,
+        )
+        await _mark_generation_failed()
+        raise HTTPException(status_code=500, detail="生成章节失败：加载写作提示词异常") from exc
     if not writer_prompt:
         logger.error("未配置写作提示词，无法生成章节内容")
         chapter.status = "failed"
@@ -969,7 +1063,20 @@ async def generate_chapter(
         request.chapter_number,
         len(contents),
     )
-    return await _load_project_schema(novel_service, project_id, current_user.id)
+    try:
+        return await _load_project_schema(novel_service, project_id, current_user.id)
+    except HTTPException:
+        await _mark_generation_failed()
+        raise
+    except Exception as exc:
+        logger.exception(
+            "项目 %s 第 %s 章生成后加载项目状态失败: %s",
+            project_id,
+            request.chapter_number,
+            exc,
+        )
+        await _mark_generation_failed()
+        raise HTTPException(status_code=500, detail="章节已生成，但刷新项目状态失败，请重试") from exc
 
 
 @router.post("/novels/{project_id}/chapters/select", response_model=NovelProjectSchema)
