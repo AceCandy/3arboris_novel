@@ -31,7 +31,7 @@ class Settings(BaseSettings):
         description="可选的额外远程版本检查接口地址",
     )
     version_info_url: Optional[AnyUrl] = Field(
-        default="https://raw.githubusercontent.com/woshidayingxiong77240/arboris-novel/main/release-metadata/version-info.json",
+        default="https://raw.githubusercontent.com/2754026865/2arboris_novel/refs/heads/main/release-metadata/version-info.json",
         env="VERSION_INFO_URL",
         description="GitHub 版本信息 JSON 地址",
     )
