@@ -127,6 +127,7 @@ jobs:
         with:
           context: .
           file: ./deploy/Dockerfile
+          target: runtime
           push: true
           pull: true
           no-cache: true
@@ -135,6 +136,13 @@ jobs:
             ${{ steps.ver.outputs.image_repo }}:latest
           build-args: |
             APP_VERSION=${{ steps.ver.outputs.version }}
+
+      - name: 输出镜像检查信息
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_ref="${{ steps.ver.outputs.image_repo }}:${{ steps.ver.outputs.version }}"
+          docker buildx imagetools inspect "${image_ref}"
 
       - name: 生成版本信息 JSON
         shell: bash

@@ -24,9 +24,9 @@ COPY frontend/ ./
 RUN npm run build
 
 # ============================================
-# 第二阶段：构建最终镜像（后端 + nginx）
+# 第二阶段：构建 Python 依赖（仅构建层保留编译工具）
 # ============================================
-FROM python:3.11-slim
+FROM python:3.11-slim AS python-builder
 ARG APP_VERSION
 ENV APP_VERSION=${APP_VERSION}
 
@@ -34,29 +34,57 @@ ENV APP_VERSION=${APP_VERSION}
 RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources && \
     sed -i 's|security.debian.org/debian-security|mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list.d/debian.sources
 
-WORKDIR /app
+WORKDIR /build
 
-# 安装系统依赖：nginx、supervisor、curl、mysql客户端等
+# 仅在构建阶段安装编译依赖，避免进入最终运行镜像
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     default-libmysqlclient-dev \
     pkg-config \
-    nginx \
-    supervisor \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # 配置 pip 使用中国镜像源
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 复制后端依赖文件
-COPY backend/requirements.txt .
+# 创建虚拟环境并安装依赖
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
 
-# 安装 Python 依赖
-RUN pip install --no-cache-dir -r requirements.txt
+COPY backend/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir --no-compile -r requirements.txt && \
+    find /opt/venv -type d \( -name "tests" -o -name "test" -o -name "__pycache__" \) -prune -exec rm -rf {} + && \
+    find /opt/venv -type f \( -name "*.pyc" -o -name "*.pyo" -o -name "*.a" \) -delete
 
-# 复制后端应用代码
-COPY backend/ ./
+# ============================================
+# 第三阶段：构建最终镜像（后端 + nginx）
+# ============================================
+FROM python:3.11-slim AS runtime
+ARG APP_VERSION
+ENV APP_VERSION=${APP_VERSION}
+ENV PATH="/opt/venv/bin:${PATH}"
+
+# 配置 apt 使用中国镜像源
+RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources && \
+    sed -i 's|security.debian.org/debian-security|mirrors.tuna.tsinghua.edu.cn/debian-security|g' /etc/apt/sources.list.d/debian.sources
+
+WORKDIR /app
+
+# 安装运行时依赖：不再包含编译工具链，降低最终镜像体积
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nginx-light \
+    supervisor \
+    curl \
+    libmariadb3 \
+    && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/* /usr/share/info/*
+
+# 从构建阶段复制 Python 依赖环境
+COPY --from=python-builder /opt/venv /opt/venv
+
+# 仅复制运行时必需的后端代码与内置提示词，避免无关文件进入镜像
+COPY backend/app ./app
+COPY backend/db ./db
+COPY backend/prompts ./prompts
 
 # 清理可能被带入的 SQLite 数据文件，确保首次启动时根据环境变量初始化管理员密码
 RUN rm -rf /app/storage && mkdir -p /app/storage
