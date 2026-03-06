@@ -14,10 +14,8 @@ RUN npm config set registry https://registry.npmmirror.com
 # 复制前端依赖文件
 COPY frontend/package*.json ./
 
-RUN npm install
-
 # 安装前端依赖
-RUN npm ci --prefer-offline --no-audit
+RUN npm ci --prefer-offline --no-audit --no-fund
 
 # 复制前端源码
 COPY frontend/ ./

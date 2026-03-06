@@ -24,6 +24,15 @@ Jenkinsfile
 *~
 .DS_Store
 
+# Local virtual environments / caches
+.venv/
+venv/
+env/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+
 # Environment files
 .env
 .env.*
@@ -31,7 +40,7 @@ Jenkinsfile
 
 backend/.env.example
 backend/.env
-frontend/.env.
+frontend/.env*
 frontend/.env.example
 !deploy/Dockerfile
 deploy/docker-compose.yml
@@ -62,6 +71,12 @@ backend/.pytest_cache/
 backend/db/*.db
 backend/*.sqlite3
 backend/storage/
+
+# Local project artifacts not needed in image build
+release-metadata/
+.dev-servers.json
+dev_servers.py
+check_db.py
 
 # Docker
 docker-compose*.yml
