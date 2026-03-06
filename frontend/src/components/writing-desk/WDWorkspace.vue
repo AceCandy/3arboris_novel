@@ -341,7 +341,10 @@ const currentComponent = computed(() => {
   }
 
   const status = selectedChapter.value?.generation_status
-  if (isInProgressStatus(status) || isGeneratingInFlight.value) {
+  const shouldRenderGenerating =
+    (isInProgressStatus(status) || isGeneratingInFlight.value)
+    && !(status === 'successful' && hasSelectedChapterContent.value)
+  if (shouldRenderGenerating) {
     return ChapterGenerating // Use a generic "in-progress" component
   }
 
@@ -437,7 +440,10 @@ const currentComponentProps = computed(() => {
   }
   const status = selectedChapter.value?.generation_status
   const isBackendInProgress = isInProgressStatus(status)
-  if (isBackendInProgress || isGeneratingInFlight.value) {
+  const shouldRenderGenerating =
+    (isBackendInProgress || isGeneratingInFlight.value)
+    && !(status === 'successful' && hasSelectedChapterContent.value)
+  if (shouldRenderGenerating) {
     const renderStatus = isBackendInProgress ? status : 'generating'
     return {
       chapterNumber: props.selectedChapterNumber,

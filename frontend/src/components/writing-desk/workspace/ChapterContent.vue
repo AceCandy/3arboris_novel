@@ -592,13 +592,20 @@ const applyOptimization = async () => {
   isApplying.value = true
 
   try {
-    await OptimizerAPI.applyOptimization(
+    const applyResult = await OptimizerAPI.applyOptimization(
       props.projectId,
       props.selectedChapter.chapter_number,
       optimizedContent.value
     )
 
-    globalAlert.showSuccess('优化内容已应用')
+    const syncStats = applyResult.foreshadowing_sync
+    if (syncStats) {
+      globalAlert.showSuccess(
+        `优化内容已应用，伏笔同步：新增 ${syncStats.created}，推进 ${syncStats.developing}，回收 ${syncStats.revealed}`
+      )
+    } else {
+      globalAlert.showSuccess('优化内容已应用')
+    }
     showOptimizeResult.value = false
     
     // 重置状态

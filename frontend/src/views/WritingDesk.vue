@@ -484,6 +484,8 @@ const generateChapter = async (chapterNumber: number) => {
 
     if (generatedChapter?.generation_status === 'waiting_for_confirm' && validVersionCount === 1) {
       selectedVersionIndex.value = 0
+      // 单版本自动确认阶段已进入“确认版本”流程，不应再被当作“生成中”渲染。
+      generatingChapter.value = null
       await selectVersion(0, {
         chapterNumber,
         suppressSuccessToast: true,

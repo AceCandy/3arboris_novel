@@ -240,6 +240,26 @@ def extract_foreshadowings(chapters_data: list) -> List[Foreshadowing]:
     return foreshadowings
 
 
+async def load_selected_version_content_map(
+    session: AsyncSession,
+    chapters: list[Chapter],
+) -> dict[int, str]:
+    """批量加载章节已选版本内容，避免逐章查询带来的 N+1。"""
+    selected_version_ids = {
+        chapter.selected_version_id
+        for chapter in chapters
+        if chapter.selected_version_id is not None
+    }
+    if not selected_version_ids:
+        return {}
+
+    versions_result = await session.execute(
+        select(ChapterVersion).where(ChapterVersion.id.in_(selected_version_ids))
+    )
+    versions = versions_result.scalars().all()
+    return {version.id: version.content for version in versions}
+
+
 # ==================== API端点 ====================
 
 @router.get("/{project_id}/emotion-curve", response_model=EmotionCurveResponse)
@@ -271,6 +291,7 @@ async def get_emotion_curve(
         select(ChapterOutline).where(ChapterOutline.project_id == project_id).order_by(ChapterOutline.chapter_number)
     )
     outlines = {o.chapter_number: o for o in outlines_result.scalars().all()}
+    selected_content_map = await load_selected_version_content_map(session, chapters)
     
     # 分析每个章节的情感
     emotion_points = []
@@ -279,14 +300,7 @@ async def get_emotion_curve(
     
     for chapter in chapters:
         # 获取章节内容
-        content = ""
-        if chapter.selected_version_id:
-            version_result = await session.execute(
-                select(ChapterVersion).where(ChapterVersion.id == chapter.selected_version_id)
-            )
-            version = version_result.scalar_one_or_none()
-            if version:
-                content = version.content
+        content = selected_content_map.get(chapter.selected_version_id, "") if chapter.selected_version_id else ""
         
         outline = outlines.get(chapter.chapter_number)
         title = outline.title if outline else f"第{chapter.chapter_number}章"
@@ -351,18 +365,12 @@ async def get_foreshadowing(
         select(ChapterOutline).where(ChapterOutline.project_id == project_id).order_by(ChapterOutline.chapter_number)
     )
     outlines = {o.chapter_number: o for o in outlines_result.scalars().all()}
+    selected_content_map = await load_selected_version_content_map(session, chapters)
     
     # 构建章节数据
     chapters_data = []
     for chapter in chapters:
-        content = ""
-        if chapter.selected_version_id:
-            version_result = await session.execute(
-                select(ChapterVersion).where(ChapterVersion.id == chapter.selected_version_id)
-            )
-            version = version_result.scalar_one_or_none()
-            if version:
-                content = version.content
+        content = selected_content_map.get(chapter.selected_version_id, "") if chapter.selected_version_id else ""
         
         outline = outlines.get(chapter.chapter_number)
         

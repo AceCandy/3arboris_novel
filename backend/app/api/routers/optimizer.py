@@ -347,7 +347,7 @@ async def apply_optimization(
     current_user: UserInDB = Depends(get_current_user),
 ):
     """
-    应用优化后的内容到章节
+    应用优化后的内容到章节，并立即同步伏笔（覆盖本章旧的自动伏笔）。
     """
     novel_service = NovelService(session)
     
@@ -373,15 +373,40 @@ async def apply_optimization(
     if not chapter.selected_version:
         raise HTTPException(status_code=400, detail="章节尚未选择版本")
     
-    # 更新内容
+    # 更新内容并同步伏笔。同步函数内部会提交事务，
+    # 这样可保证“正文更新 + 伏笔重建”在同一次请求中生效。
     chapter.selected_version.content = resolved_optimized_content
-    await session.commit()
+    try:
+        from .writer import _sync_foreshadowings_for_chapter
+
+        sync_stats = await _sync_foreshadowings_for_chapter(
+            session,
+            project_id=resolved_project_id,
+            chapter=chapter,
+            content=resolved_optimized_content,
+        )
+    except Exception as exc:
+        await session.rollback()
+        logger.exception(
+            "应用优化后伏笔同步失败 project=%s chapter=%s err=%s",
+            resolved_project_id,
+            resolved_chapter_number,
+            exc,
+        )
+        raise HTTPException(status_code=500, detail="优化内容保存失败：伏笔同步异常，请重试")
     
     logger.info(
-        "用户 %s 应用了项目 %s 第 %s 章的优化内容",
+        "用户 %s 应用了项目 %s 第 %s 章的优化内容并同步伏笔 created=%s revealed=%s developing=%s",
         current_user.id,
         resolved_project_id,
-        resolved_chapter_number
+        resolved_chapter_number,
+        sync_stats.get("created", 0),
+        sync_stats.get("revealed", 0),
+        sync_stats.get("developing", 0),
     )
     
-    return {"status": "success", "message": "优化内容已应用"}
+    return {
+        "status": "success",
+        "message": "优化内容已应用，伏笔已同步",
+        "foreshadowing_sync": sync_stats,
+    }

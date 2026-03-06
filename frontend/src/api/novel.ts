@@ -344,6 +344,18 @@ export interface OptimizeResponse {
   dimension: string
 }
 
+export interface ForeshadowingSyncStats {
+  created: number
+  revealed: number
+  developing: number
+}
+
+export interface ApplyOptimizationResponse {
+  status: string
+  message: string
+  foreshadowing_sync?: ForeshadowingSyncStats
+}
+
 // 优化API
 const OPTIMIZER_BASE = `${API_BASE_URL}${API_PREFIX}/optimizer`
 
@@ -365,7 +377,7 @@ export class OptimizerAPI {
     projectId: string,
     chapterNumber: number,
     optimizedContent: string
-  ): Promise<{ status: string; message: string }> {
+  ): Promise<ApplyOptimizationResponse> {
     return request(`${OPTIMIZER_BASE}/apply-optimization`, {
       method: 'POST',
       body: JSON.stringify({
