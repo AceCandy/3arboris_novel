@@ -27,3 +27,4 @@ __pycache__/
 *.db
 
 rag_vectors.db
+.claude/worktrees/
