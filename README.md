@@ -1,227 +1,66 @@
-# Arboris-Novel | 面向创作者的写作辅助工具
+# Arboris Novel
 
-**[English](README-en.md)** | 中文
+> 面向长篇小说创作的 AI 辅助系统，覆盖灵感构思、蓝图生成、章节写作、评审与后台管理。
 
-![GitHub stars](https://img.shields.io/github/stars/t59688/arboris-novel?style=social)
-![GitHub forks](https://img.shields.io/github/forks/t59688/arboris-novel?style=social)
-![GitHub issues](https://img.shields.io/github/issues/t59688/arboris-novel)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+中文 | [English](./README-en.md)
 
-如果你想使用命令行+编辑器的方式，可搭配使用 [novel-kit](https://github.com/t59688/novel-kit)。
+## 项目简介
 
-写作时容易卡在「主角叫什么」「故事发生在哪」「下一章写什么」这类问题上。**Arboris** 在需要时帮你理清思路、记录设定、给出可选方向，让想法落成故事。
+Arboris Novel 是一个用于长篇小说创作的全栈应用，支持从概念对话到蓝图确认、章节生成、版本评审、伏笔追踪与项目管理的完整流程。
 
-**在线体验：** [https://arboris.aozhiai.com](https://arboris.aozhiai.com)
+当前技术栈：
 
-<p align="center">
-  <table align="center">
-    <tr>
-      <td align="center"><strong>交流群</strong><br/><img width="220" alt="交流群二维码" src="https://github.com/user-attachments/assets/6d4fe420-f8ae-4fe4-883d-235eb576c83b" /></td>
-      <td align="center"><strong>作者公众号</strong><br/><img width="220" alt="作者公众号" src="https://picui.ogmua.cn/s1/2026/02/24/699d109e4ced2.webp" /></td>
-    </tr>
-  </table>
-</p>
+- 前端：Vue 3 + Vite + TypeScript + Pinia + Vue Router + Naive UI
+- 后端：FastAPI + SQLAlchemy + Pydantic Settings
+- 存储：SQLite / MySQL + libsql 向量检索
+- AI：OpenAI 兼容接口 + OpenAI / Ollama Embedding
 
----
+## 核心创作流程
 
-## 界面预览
+1. 登录或注册
+2. 在设置页配置个人 LLM / Embedding 模型
+3. 在灵感模式中进行多轮概念对话，创建项目
+4. 生成并确认结构化蓝图
+5. 在工作区管理项目
+6. 在详情页查看设定、角色、纲要、章节与分析结果
+7. 在写作台生成、评审、选版与编辑章节内容
+8. 在后台管理用户、Prompt、更新日志与系统配置
 
-<p align="center">
-  <img width="1471" alt="主界面" src="https://github.com/user-attachments/assets/a52d0214-bc1b-4792-8a2b-267b09e47379" />
-</p>
-<p align="center">
-  <img width="1375" alt="角色管理" src="https://github.com/user-attachments/assets/0673faad-43df-4479-83ae-cffa870199a3" />
-</p>
-<p align="center">
-  <img width="1392" alt="大纲编辑" src="https://github.com/user-attachments/assets/b7a7af24-1689-4341-aa78-26b0d74bdddd" />
-</p>
-<p align="center">
-  <img width="1255" alt="写作界面" src="https://github.com/user-attachments/assets/c831d746-8c1a-4ce8-aa1c-9b852da15c11" />
-</p>
+## 功能特性
 
----
-
-## 功能概览
-
-### 设定管理
-角色、地点、派系等设定集中记录，随时查阅，避免写到后期前后矛盾（如角色外貌、世界观规则等）。
-
-### 大纲与故事线
-零散的场景和灵感可交给 AI 梳理，生成从开头到结局的主线大纲。
-
-### 写作辅助
-状态不佳时可让 AI 先出草稿再按自己的风格修改；也可自己写开头，让 AI 续写以获取灵感。
-
-### 多版本对比
-支持一次生成多版内容，挑选最符合风格的部分，逐步让模型更贴合你的笔触。
-
----
-
-## 项目初衷
-
-目标是做一个**能记住你的世界、理解角色、随故事推进的写作伙伴**，而不是单纯的自动生成器。因此做了 Arboris 并选择开源，方便更多创作者使用。
-
----
+- 灵感模式多轮对话共创
+- 蓝图生成与保存
+- 章节生成、评审、选版、编辑
+- 章节纲要生成与维护
+- 伏笔追踪与状态同步
+- 情绪曲线与分析视图
+- `.txt` 小说导入
+- 用户、Prompt、更新日志、系统配置管理
 
 ## 快速开始
 
-### 方式一：Docker Compose 命令行部署
+### 本地开发
 
-```bash
-# 1. 复制配置文件
-cp .env.example .env
-
-# 2. 编辑 .env 中的必填项：
-#    - SECRET_KEY: 随机字符串，用于 JWT 等
-#    - OPENAI_API_KEY: 大模型 API Key
-#    - ADMIN_DEFAULT_PASSWORD: 管理员密码（勿用默认值）
-
-# 3. 启动（默认 SQLite，无需单独安装数据库）
-docker compose up -d
-
-# 启动后在浏览器访问 http://localhost:<端口>
-```
-
-### 方式二：Docker Compose 可视化部署
-
-1. 在可视化界面中搜索镜像仓库：`woshidayingxiong77240/arboris-novel`
-2. 选择镜像后创建部署（或创建 Compose 应用）
-3. 配置存储映射（Volume）时：
-   - 左侧（宿主机路径）改成你自己的实际路径
-   - 右侧（容器内路径）是部署后数据存放位置，一般不需要修改
-
-![Docker 镜像搜索](docs/images/quickstart/docker-compose-visual-step1.png)
-![配置存储映射）](docs/images/quickstart/docker-compose-visual-step2.png)
-
-
-### 方式三：使用 MySQL（Compose 内 MySQL）
-
-```bash
-# .env 中设置 DB_PROVIDER=mysql，然后执行：
-DB_PROVIDER=mysql docker compose --profile mysql up -d
-```
-
-### 方式四：使用自有 MySQL
-
-```bash
-# 在 .env 中配置数据库地址、用户名、密码后执行：
-DB_PROVIDER=mysql docker compose up -d
-```
-
----
-
-## 环境变量说明
-
-常用配置如下（完整项见 `.env.example`）：
-
-| 配置项 | 必填吗 | 说明 |
-|--------|--------|------|
-| `SECRET_KEY` | ✅ | JWT 加密密钥，需自行随机生成并妥善保管 |
-| `OPENAI_API_KEY` | ✅ | 你的 LLM API Key（OpenAI 或兼容的） |
-| `OPENAI_API_BASE_URL` | ❌ | API 地址，默认是 OpenAI 官方的 |
-| `OPENAI_MODEL_NAME` | ❌ | 模型名称，默认 `gpt-3.5-turbo` |
-| `ADMIN_DEFAULT_PASSWORD` | ❌ | 管理员初始密码，部署后务必修改 |
-| `ALLOW_USER_REGISTRATION` | ❌ | 是否开放注册，默认 `false` |
-| `SMTP_SERVER` / `SMTP_USERNAME` | 开放注册时必填 | 邮件服务，用于发送验证码 |
-
-> **数据存储：** 默认 SQLite，数据在 Docker 卷中。需映射到本地时，在 `.env` 中设置 `SQLITE_STORAGE_SOURCE=./storage`。
-
----
-
-## 常见问题
-
-### 基础使用
-
-**Q: 不会用 Docker？**  
-A: 安装 Docker Desktop（Windows/Mac）或 Docker Engine（Linux），按上文命令执行即可。
-
-**Q: API Key 会泄露吗？**  
-A: 不会。密钥仅存在于服务端 `.env`，不向前端或用户暴露。
-
-**Q: 是否支持其他大模型？**  
-A: 支持。只要提供 OpenAI 兼容接口，在 `.env` 中配置 `OPENAI_API_BASE_URL` 即可。
-
-**Q: 修改了代码如何参与？**  
-A: 欢迎提交 PR 或 Issue。
-
-### 生成小说时的常见错误
-
-**Q: 提示"未配置默认 LLM API Key"怎么办？**  
-A: 检查 `.env` 文件中的 `OPENAI_API_KEY` 是否正确配置。如果是个人用户，也可以在个人设置中配置自定义 API Key。
-
-**Q: 提示"AI 服务响应超时"或"无法连接到 AI 服务"？**  
-A: 网络或 API 服务问题导致。可以：
-- 检查网络连接是否正常
-- 确认 `OPENAI_API_BASE_URL` 配置是否正确
-- 如果使用自建服务，检查服务是否正常运行
-- 稍后重试
-
-**Q: 提示"AI 响应因长度限制被截断"？**  
-A: 生成的内容超过了模型的输出限制。建议：
-- 使用支持更长输出的模型
-
-**Q: 提示"AI 未返回有效内容"或"AI 服务内部错误"？**  
-A: AI 服务端出现问题。通常是暂时性的，可以：
-- 大多是LLM服务的问题，尤其是逆向的API。
-- 检查 API Key 是否有效且有足够余额
-- 查看后端日志获取详细错误信息
-
-**Q: 提示"蓝图中未找到对应章节纲要"？**  
-A: 在生成章节内容前，需要先在蓝图（大纲）中创建对应章节的纲要。请先完善章节大纲再进行生成。
-
-**Q: 提示"未配置摘要提示词"？**  
-A: 系统缺少必要的 Prompt 配置。管理员需要在后台配置名为 `extraction` 的提示词模板，用于生成章节摘要。
-
-**Q: 提示"AI 返回的内容格式不正确"或 JSON 解析错误？**（较常见）  
-A: AI 返回内容无法解析为有效 JSON。可能原因与处理方式：
-- **原因 1：模型能力不足** - 某些模型难以稳定输出结构化 JSON
-  - 解决：切换到能力更强的模型
-  - 或使用支持 structured output 的模型
-- **原因 2：内容过长** - 某些逆向API可能无法支持长输出。
-
-- **临时处理：** 重试几次，或更换 AI 模型
-
-**Q: 生成的内容质量不理想怎么办？**  
-A: 可以尝试：
-- 完善角色、地点、派系等设定信息
-- 优化章节纲要，提供更详细的指引
-- 使用多版本生成功能，让 AI 生成多个版本后挑选最佳的
-- 调整使用的模型，需要长上下文的
-
----
-
-## 技术栈
-
-- **后端：** Python + FastAPI
-- **数据库：** SQLite（默认）或 MySQL + libsql
-- **前端：** Vue + TailwindCSS
-- **部署：** Docker + Docker Compose
-- **AI：** OpenAI API 或兼容接口
-
----
-
-## 面向开发者
-
-### 环境准备
-
-- Python 3.10+（建议使用虚拟环境）
-- Node.js 18+ 与 npm
-- pip / virtualenv（或你习惯的依赖管理工具）
-- 可选：Docker 与 Docker Compose（用于一键部署与发布）
-
-### 后端本地开发
+后端：
 
 ```bash
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate  # Windows 使用 .venv\Scripts\activate
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+# source .venv/bin/activate
+
 pip install -r requirements.txt
+# Windows
+copy env.example .env
+# macOS / Linux
+# cp env.example .env
+
 uvicorn app.main:app --reload
 ```
 
-默认会监听 `http://127.0.0.1:8000`，你可以通过 `--host`、`--port` 调整，或加上 `--reload` 保持热重载。
-
-### 前端本地开发
+前端：
 
 ```bash
 cd frontend
@@ -229,43 +68,114 @@ npm install
 npm run dev
 ```
 
-开发服务器默认运行在 `http://127.0.0.1:5173`，可通过 `--host` 参数暴露给局域网设备。
+访问地址：
 
-### 打包与构建
+- 前端：`http://127.0.0.1:5173`
+- API：`http://127.0.0.1:8000`
+- Swagger：`http://127.0.0.1:8000/docs`
 
-- 前端：`npm run build`，构建产物位于 `frontend/dist/`
-- 后端：确认依赖锁定后，可使用 `pip install -r requirements.txt` 安装到目标环境，或基于 `deploy/Dockerfile` 构建镜像
-- 静态文件托管：生产环境下可用 Nginx 等服务托管 `dist` 目录，并由后端提供 API
+也可以在仓库根目录使用辅助脚本：
 
-### 发布与部署
+- Windows CMD：`dev.bat`
+- PowerShell：`powershell -ExecutionPolicy Bypass -File .\dev.ps1`
+- Bash：`bash ./dev.sh`
 
-推荐在根目录下使用 Compose 文件完成一体化部署：
+### Docker（本地）
 
 ```bash
-docker compose -f deploy/docker-compose.yml up -d --build
+# Windows
+copy deploy\.env.example deploy\.env
+# macOS / Linux
+# cp deploy/.env.example deploy/.env
+
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
 ```
 
-如需推送镜像，可在 `deploy` 目录执行 `docker build -t <registry>/arboris:<tag> .`，测试后再 `docker push` 发布。
+默认访问地址：
 
----
+- `http://127.0.0.1:8088`
 
-## 参与贡献
+如需使用内置 MySQL：
 
-- Star 项目
-- 在 Issues 中反馈 Bug 或建议
-- 提交 PR 贡献代码
-- 通过文首二维码加入交流群
+```bash
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml --profile mysql up -d --build
+```
 
----
+## 配置说明
 
-## 反馈与致谢
+本地开发使用 `backend/env.example` 作为 `backend/.env` 模板。
 
-使用 Arboris 写出作品后，欢迎与我们分享。祝写作顺利。
+最低可启动配置：
 
----
+- `SECRET_KEY`
+- `DB_PROVIDER`
+- 使用 SQLite 时的 `SQLITE_DB_PATH`
 
-## License
+建议补齐以正常使用创作能力：
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+- `OPENAI_API_KEY`
+- `OPENAI_API_BASE_URL`
+- `OPENAI_MODEL_NAME`
+- `EMBEDDING_PROVIDER`
+- `EMBEDDING_MODEL`
+- `VECTOR_DB_URL`
+- `ADMIN_DEFAULT_USERNAME`
+- `ADMIN_DEFAULT_PASSWORD`
 
-[![Star History Chart](https://api.star-history.com/svg?repos=t59688/arboris-novel&type=Date)](https://star-history.com/#t59688/arboris-novel&Date)
+Docker 部署使用 `deploy/.env.example` 作为 `deploy/.env` 模板。
+
+## 初始化行为
+
+后端首次启动时会自动：
+
+1. 确保数据库存在
+2. 创建缺失表结构
+3. 补齐历史缺失字段
+4. 在没有管理员时创建默认管理员账号
+5. 将 `backend/prompts/*.md` 导入数据库
+6. 同步默认系统配置
+
+## 目录结构
+
+```text
+.
+├─ backend/                  # FastAPI 后端
+│  ├─ app/
+│  │  ├─ api/                # 路由层
+│  │  ├─ core/               # 配置、安全、依赖
+│  │  ├─ db/                 # 数据库初始化与连接
+│  │  ├─ models/             # ORM 模型
+│  │  ├─ repositories/       # 数据访问层
+│  │  ├─ schemas/            # Pydantic Schema
+│  │  └─ services/           # 业务服务层
+│  ├─ prompts/               # 默认 Prompt 模板
+│  └─ env.example
+├─ frontend/                 # Vue 前端
+│  ├─ src/
+│  │  ├─ api/
+│  │  ├─ components/
+│  │  ├─ router/
+│  │  ├─ stores/
+│  │  └─ views/
+├─ deploy/                   # Docker / Nginx / Compose
+├─ docs/                     # 补充文档
+├─ dev.bat
+├─ dev.ps1
+└─ dev.sh
+```
+
+## 二开说明
+
+当前仓库已按二开场景整理。准备发布你自己的版本时，至少应检查以下配置：
+
+- `VERSION_INFO_URL`
+- `IMAGE_REPO`
+- `EMAIL_FROM`
+- Linux.do OAuth 相关配置（如启用）
+- 默认管理员账号密码
+
+更完整的部署与二开说明见 [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md)。
+
+## 许可
+
+请以仓库中的实际 `LICENSE` 文件或你的发布策略为准。

@@ -1,201 +1,63 @@
-# Arboris-Novel | Writing Assistant for Creators
+# Arboris Novel
 
-[中文](11.md) | English
+> AI-assisted long-form novel creation system for ideation, blueprint generation, chapter writing, review, and admin management.
 
-![GitHub stars](https://img.shields.io/github/stars/t59688/arboris-novel?style=social)
-![GitHub forks](https://img.shields.io/github/forks/t59688/arboris-novel?style=social)
-![GitHub issues](https://img.shields.io/github/issues/t59688/arboris-novel)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[中文](./README.md) | English
 
-For a CLI + editor workflow, you can use [novel-kit](https://github.com/t59688/novel-kit) alongside.
+## Overview
 
-Writing often gets stuck on questions like “what’s the protagonist’s name,” “where does the story take place,” or “what happens in the next chapter.” **Arboris** helps you clarify ideas, keep track of settings, and explore directions when you need it.
+Arboris Novel is a full-stack writing assistant for long-form fiction. It supports the end-to-end workflow from concept conversation to blueprint confirmation, chapter drafting, version review, foreshadowing analysis, and project management.
 
-**Try it online:** [https://arboris.aozhiai.com](https://arboris.aozhiai.com)
+Current stack:
 
-<p align="center">
-  <table align="center">
-    <tr>
-      <td align="center"><strong>Community</strong><br/><img width="220" alt="Community QR code" src="https://github.com/user-attachments/assets/6d4fe420-f8ae-4fe4-883d-235eb576c83b" /></td>
-      <td align="center"><strong>Author (WeChat)</strong><br/><img width="220" alt="Author WeChat public account" src="https://picui.ogmua.cn/s1/2026/02/24/699d109e4ced2.webp" /></td>
-    </tr>
-  </table>
-</p>
+- Frontend: Vue 3 + Vite + TypeScript + Pinia + Vue Router + Naive UI
+- Backend: FastAPI + SQLAlchemy + Pydantic Settings
+- Storage: SQLite or MySQL, plus libsql for vector retrieval
+- AI: OpenAI-compatible LLM APIs, OpenAI/Ollama embeddings
 
----
+## Core workflow
 
-## Screenshots
-
-<p align="center">
-  <img width="1471" alt="Main interface" src="https://github.com/user-attachments/assets/a52d0214-bc1b-4792-8a2b-267b09e47379" />
-</p>
-<p align="center">
-  <img width="1375" alt="Character management" src="https://github.com/user-attachments/assets/0673faad-43df-4479-83ae-cffa870199a3" />
-</p>
-<p align="center">
-  <img width="1392" alt="Outline editor" src="https://github.com/user-attachments/assets/b7a7af24-1689-4341-aa78-26b0d74bdddd" />
-</p>
-<p align="center">
-  <img width="1255" alt="Writing interface" src="https://github.com/user-attachments/assets/c831d746-8c1a-4ce8-aa1c-9b852da15c11" />
-</p>
-
----
+1. Sign in or register
+2. Configure personal LLM and embedding models in Settings
+3. Start a project in Inspiration Mode through multi-turn idea conversation
+4. Generate and confirm a structured blueprint
+5. Manage projects in Workspace
+6. Review worldbuilding, characters, outlines, chapters, and analysis in Detail
+7. Generate, review, select, and edit chapter content in Writing Desk
+8. Manage users, prompts, updates, and system configuration in Admin
 
 ## Features
 
-### Setting management
-Characters, locations, factions, and other settings are stored in one place so you can avoid contradictions later (e.g. character appearance, world rules).
-
-### Outline & storylines
-Scattered scenes and ideas can be handed to the AI to turn into a coherent outline from start to end.
-
-### Writing assistance
-When you’re not in the mood, the AI can draft first and you edit to your style; or you write the opening and let the AI continue for inspiration.
-
-### Multi-version comparison
-Generate several versions at once, pick the parts that fit your style best, and gradually tune the model to your voice.
-
----
-
-## Why this project
-
-The goal is a **writing partner that remembers your world, understands your characters, and moves the story forward with you**—not just an auto-generator. Hence Arboris was built and open-sourced for more creators to use.
-
----
+- Multi-turn inspiration chat for project creation
+- Blueprint generation and persistence
+- Chapter drafting, evaluation, version selection, and editing
+- Outline generation and maintenance
+- Foreshadowing tracking and status sync
+- Emotion curve and analytics views
+- `.txt` novel import
+- User, prompt, update log, and system configuration management
 
 ## Quick start
 
-### Option 1: Docker
+### Local development
 
-```bash
-# 1. Copy config
-cp .env.example .env
-
-# 2. Edit required fields in .env:
-#    - SECRET_KEY: random string for JWT etc.
-#    - OPENAI_API_KEY: your LLM API key
-#    - ADMIN_DEFAULT_PASSWORD: admin password (do not leave default)
-
-# 3. Start (default SQLite, no separate DB install)
-docker compose up -d
-
-# Then open http://localhost:<port> in your browser
-```
-
-### Option 2: MySQL via Compose
-
-```bash
-# Set DB_PROVIDER=mysql in .env, then:
-DB_PROVIDER=mysql docker compose --profile mysql up -d
-```
-
-### Option 3: Your own MySQL
-
-```bash
-# Configure DB host, user, password in .env, then:
-DB_PROVIDER=mysql docker compose up -d
-```
-
----
-
-## Environment variables
-
-Common options (full list in `.env.example`):
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `SECRET_KEY` | ✅ | JWT secret; generate randomly and keep safe |
-| `OPENAI_API_KEY` | ✅ | Your LLM API key (OpenAI or compatible) |
-| `OPENAI_API_BASE_URL` | ❌ | API base URL; default is OpenAI |
-| `OPENAI_MODEL_NAME` | ❌ | Model name; default `gpt-3.5-turbo` |
-| `ADMIN_DEFAULT_PASSWORD` | ❌ | Initial admin password; change after deploy |
-| `ALLOW_USER_REGISTRATION` | ❌ | Allow sign-up; default `false` |
-| `SMTP_SERVER` / `SMTP_USERNAME` | If registration on | Mail config for verification emails |
-
-> **Storage:** Default is SQLite in a Docker volume. To use a local path, set `SQLITE_STORAGE_SOURCE=./storage` in `.env`.
-
----
-
-## FAQ
-
-### General
-
-**Q: I’m not familiar with Docker.**  
-A: Install Docker Desktop (Windows/Mac) or Docker Engine (Linux), then run the commands above.
-
-**Q: Can my API key leak?**  
-A: No. Keys live only in the server `.env` and are not exposed to the frontend or users.
-
-**Q: Can I use other LLMs?**  
-A: Yes. Any OpenAI-compatible API works; set `OPENAI_API_BASE_URL` in `.env`.
-
-**Q: I changed the code. How do I contribute?**  
-A: Open a PR or an Issue.
-
-### Generation errors
-
-**Q: “Default LLM API Key not configured”?**  
-A: Check `OPENAI_API_KEY` in `.env`. Users can also set a personal API key in settings.
-
-**Q: “AI service timeout” or “Cannot connect to AI service”?**  
-A: Usually network or API issues. Check connectivity, `OPENAI_API_BASE_URL`, and that any self-hosted service is running; then retry.
-
-**Q: “AI response truncated due to length limit”?**  
-A: Output exceeded the model’s limit. Use a model that supports longer output.
-
-**Q: “AI returned no valid content” or “AI service error”?**  
-A: Server-side AI issue, often temporary. Check API key and balance; inspect backend logs for details. Third-party/reverse APIs are a common source.
-
-**Q: “Chapter outline not found in blueprint”?**  
-A: Add the chapter outline in the blueprint (outline) before generating that chapter.
-
-**Q: “Summary prompt not configured”?**  
-A: The admin must configure a prompt template named `extraction` for chapter summaries.
-
-**Q: “AI response format invalid” or JSON parse error?** (Common)  
-A: The AI output isn’t valid JSON. Possible causes:
-- **Model capability** — Some models don’t reliably output structured JSON. Use a stronger model or one with structured output.
-- **Length** — Some APIs don’t support long outputs.
-
-**Workaround:** Retry a few times or switch to another model.
-
-**Q: Generated content quality is poor?**  
-A: Try: filling in character/location/faction settings; improving chapter outlines; using multi-version generation and picking the best; or using a model with longer context.
-
----
-
-## Tech stack
-
-- **Backend:** Python + FastAPI  
-- **Database:** SQLite (default) or MySQL + libsql  
-- **Frontend:** Vue + TailwindCSS  
-- **Deploy:** Docker + Docker Compose  
-- **AI:** OpenAI API or compatible
-
----
-
-## For developers
-
-### Prerequisites
-
-- Python 3.10+ (virtualenv recommended)
-- Node.js 18+ and npm
-- pip / virtualenv (or your preferred tool)
-- Optional: Docker & Docker Compose for one-command deploy
-
-### Backend (local)
+Backend:
 
 ```bash
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+# source .venv/bin/activate
+
 pip install -r requirements.txt
+copy env.example .env   # Windows
+# cp env.example .env   # macOS / Linux
 uvicorn app.main:app --reload
 ```
 
-Server listens on `http://127.0.0.1:8000` by default; use `--host` / `--port` or `--reload` as needed.
-
-### Frontend (local)
+Frontend:
 
 ```bash
 cd frontend
@@ -203,43 +65,114 @@ npm install
 npm run dev
 ```
 
-Dev server runs at `http://127.0.0.1:5173`; use `--host` to expose on the network.
+Open:
 
-### Build
+- Frontend: `http://127.0.0.1:5173`
+- API: `http://127.0.0.1:8000`
+- Swagger: `http://127.0.0.1:8000/docs`
 
-- Frontend: `npm run build` → output in `frontend/dist/`
-- Backend: `pip install -r requirements.txt` on target, or build from `deploy/Dockerfile`
-- Production: serve `dist` with Nginx etc.; backend serves the API
+Optional launcher scripts from repo root:
 
-### Deploy
+- Windows CMD: `dev.bat`
+- PowerShell: `powershell -ExecutionPolicy Bypass -File .\dev.ps1`
+- Bash: `bash ./dev.sh`
 
-From the repo root:
+### Docker (local)
 
 ```bash
-docker compose -f deploy/docker-compose.yml up -d --build
+# Windows
+copy deploy\.env.example deploy\.env
+# macOS / Linux
+# cp deploy/.env.example deploy/.env
+
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d --build
 ```
 
-To push images: from `deploy`, run `docker build -t <registry>/arboris:<tag> .`, test, then `docker push`.
+Default access URL:
 
----
+- `http://127.0.0.1:8088`
 
-## Contributing
+To start with the bundled MySQL profile:
 
-- Star the repo  
-- Report bugs or ideas in Issues  
-- Send PRs  
-- Join the community via the QR codes above  
+```bash
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml --profile mysql up -d --build
+```
 
----
+## Configuration
 
-## Feedback
+For local development, use `backend/env.example` as the template for `backend/.env`.
 
-If you create something with Arboris, we’d love to hear about it. Happy writing.
+Minimum required settings:
 
----
+- `SECRET_KEY`
+- `DB_PROVIDER`
+- `SQLITE_DB_PATH` when using SQLite
+
+Recommended for writing features:
+
+- `OPENAI_API_KEY`
+- `OPENAI_API_BASE_URL`
+- `OPENAI_MODEL_NAME`
+- `EMBEDDING_PROVIDER`
+- `EMBEDDING_MODEL`
+- `VECTOR_DB_URL`
+- `ADMIN_DEFAULT_USERNAME`
+- `ADMIN_DEFAULT_PASSWORD`
+
+For Docker deployment, use `deploy/.env.example` as the template for `deploy/.env`.
+
+## Initialization behavior
+
+On first backend startup, the application automatically:
+
+1. Ensures the database exists
+2. Creates missing tables
+3. Backfills missing legacy fields
+4. Creates the default admin account if none exists
+5. Imports `backend/prompts/*.md` into the database if missing
+6. Syncs default system configuration
+
+## Project structure
+
+```text
+.
+├─ backend/                  # FastAPI backend
+│  ├─ app/
+│  │  ├─ api/                # Routers
+│  │  ├─ core/               # Config, security, dependencies
+│  │  ├─ db/                 # DB setup and initialization
+│  │  ├─ models/             # ORM models
+│  │  ├─ repositories/       # Data access layer
+│  │  ├─ schemas/            # Pydantic schemas
+│  │  └─ services/           # Business services
+│  ├─ prompts/               # Default prompt templates
+│  └─ env.example
+├─ frontend/                 # Vue frontend
+│  ├─ src/
+│  │  ├─ api/
+│  │  ├─ components/
+│  │  ├─ router/
+│  │  ├─ stores/
+│  │  └─ views/
+├─ deploy/                   # Docker, Nginx, Compose
+├─ docs/                     # Supplementary docs
+├─ dev.bat
+├─ dev.ps1
+└─ dev.sh
+```
+
+## Secondary development notes
+
+This repository has already been adapted for secondary development. Before publishing your own fork or deployment, review at least the following:
+
+- `VERSION_INFO_URL`
+- `IMAGE_REPO`
+- `EMAIL_FROM`
+- Linux.do OAuth settings if enabled
+- Default admin credentials
+
+A more detailed deployment guide is available in [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md).
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-[![Star History Chart](https://api.star-history.com/svg?repos=t59688/arboris-novel&type=Date)](https://star-history.com/#t59688/arboris-novel&Date)
+Please refer to the actual `LICENSE` file or your project distribution policy.
