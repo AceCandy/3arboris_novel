@@ -60,6 +60,8 @@ class LLMClient:
             if not chunk.choices:
                 continue
             choice = chunk.choices[0]
+            if not choice.delta:
+                continue
             yield {
                 "content": choice.delta.content,
                 "finish_reason": choice.finish_reason,
