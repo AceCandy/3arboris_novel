@@ -1,7 +1,7 @@
 # AIMETA P=伏笔服务_伏笔管理业务逻辑|R=伏笔CRUD_回收追踪|NR=不含自动分析|E=ForeshadowingService|X=internal|A=服务类|D=sqlalchemy|S=db|RD=./README.ai
 """伏笔管理服务"""
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict
 from datetime import datetime
 from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,9 +12,12 @@ from ..models.foreshadowing import (
     ForeshadowingReminder,
     ForeshadowingAnalysis,
 )
-from ..models.novel import Chapter, NovelProject
 
 logger = logging.getLogger(__name__)
+
+ACTIVE_FORESHADOWING_STATUSES = ("planted", "developing", "partial")
+RESOLVED_FORESHADOWING_STATUS = "revealed"
+ABANDONED_FORESHADOWING_STATUS = "abandoned"
 
 
 class ForeshadowingService:
@@ -99,7 +102,7 @@ class ForeshadowingService:
         if not foreshadowing:
             raise ValueError(f"伏笔不存在: {foreshadowing_id}")
         
-        foreshadowing.status = "resolved"
+        foreshadowing.status = RESOLVED_FORESHADOWING_STATUS
         foreshadowing.resolved_chapter_id = resolved_chapter_id
         foreshadowing.resolved_chapter_number = resolved_chapter_number
         
@@ -128,7 +131,7 @@ class ForeshadowingService:
         if not foreshadowing:
             raise ValueError(f"伏笔不存在: {foreshadowing_id}")
         
-        foreshadowing.status = "abandoned"
+        foreshadowing.status = ABANDONED_FORESHADOWING_STATUS
         if reason:
             foreshadowing.author_note = f"{foreshadowing.author_note or ''}\n[放弃原因]: {reason}".strip()
         
@@ -145,10 +148,11 @@ class ForeshadowingService:
         query = select(Foreshadowing).where(
             and_(
                 Foreshadowing.project_id == project_id,
-                Foreshadowing.status == "open",
+                Foreshadowing.status.in_(ACTIVE_FORESHADOWING_STATUSES),
+                Foreshadowing.chapter_number < current_chapter_number,
             )
         ).order_by(Foreshadowing.chapter_number)
-        
+
         result = await self.session.execute(query)
         return result.scalars().all()
     
@@ -216,34 +220,43 @@ class ForeshadowingService:
         query = select(Foreshadowing).where(Foreshadowing.project_id == project_id)
         result = await self.session.execute(query)
         foreshadowings = result.scalars().all()
-        
+
         # 统计
         total = len(foreshadowings)
-        resolved_count = sum(1 for f in foreshadowings if f.status == "resolved")
-        unresolved_count = sum(1 for f in foreshadowings if f.status == "open")
-        abandoned_count = sum(1 for f in foreshadowings if f.status == "abandoned")
-        
+        resolved_count = sum(
+            1 for f in foreshadowings if f.status == RESOLVED_FORESHADOWING_STATUS
+        )
+        unresolved_count = sum(
+            1 for f in foreshadowings if f.status in ACTIVE_FORESHADOWING_STATUSES
+        )
+        abandoned_count = sum(
+            1 for f in foreshadowings if f.status == ABANDONED_FORESHADOWING_STATUS
+        )
+
         # 计算平均回收距离
         resolution_distances = []
         for f in foreshadowings:
-            if f.status == "resolved" and f.resolved_chapter_number:
+            if (
+                f.status == RESOLVED_FORESHADOWING_STATUS
+                and f.resolved_chapter_number is not None
+            ):
                 distance = f.resolved_chapter_number - f.chapter_number
                 resolution_distances.append(distance)
-        
+
         avg_resolution_distance = (
             sum(resolution_distances) / len(resolution_distances)
             if resolution_distances
             else 0
         )
-        
+
         # 计算未回收比例
         unresolved_ratio = unresolved_count / total if total > 0 else 0
-        
+
         # 模式分析
         type_distribution = {}
         for f in foreshadowings:
             type_distribution[f.type] = type_distribution.get(f.type, 0) + 1
-        
+
         # 质量评分
         quality_scores = []
         for f in foreshadowings:
@@ -251,13 +264,13 @@ class ForeshadowingService:
                 for resolution in f.resolutions:
                     if resolution.quality_score:
                         quality_scores.append(resolution.quality_score)
-        
+
         overall_quality_score = (
             sum(quality_scores) / len(quality_scores)
             if quality_scores
             else None
         )
-        
+
         # 生成建议
         recommendations = []
         if unresolved_ratio > 0.3:
@@ -266,13 +279,16 @@ class ForeshadowingService:
             recommendations.append("伏笔回收距离较长，可能影响读者记忆，建议缩短回收周期")
         if overall_quality_score and overall_quality_score < 6:
             recommendations.append("伏笔回收质量评分较低，建议改进回收方式")
-        
+
         # 更新或创建分析记录
-        analysis = await self.session.get(ForeshadowingAnalysis, project_id)
+        analysis_query = select(ForeshadowingAnalysis).where(
+            ForeshadowingAnalysis.project_id == project_id
+        )
+        analysis = await self.session.scalar(analysis_query)
         if not analysis:
             analysis = ForeshadowingAnalysis(project_id=project_id)
             self.session.add(analysis)
-        
+
         analysis.total_foreshadowings = total
         analysis.resolved_count = resolved_count
         analysis.unresolved_count = unresolved_count
@@ -283,7 +299,7 @@ class ForeshadowingService:
         analysis.overall_quality_score = overall_quality_score
         analysis.recommendations = recommendations
         analysis.analyzed_at = datetime.utcnow()
-        
+
         await self.session.flush()
         logger.info(f"分析伏笔: project={project_id}, total={total}, resolved={resolved_count}")
         return analysis

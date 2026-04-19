@@ -28,8 +28,12 @@ from sqlalchemy.orm import selectinload
 from ...core.config import settings
 from ...core.dependencies import get_current_user
 from ...db.session import AsyncSessionLocal, get_session
+from ...models.chapter_blueprint import ChapterBlueprint
+from ...models.constitution import NovelConstitution
 from ...models.foreshadowing import Foreshadowing, ForeshadowingStatusHistory
 from ...models.novel import Chapter, ChapterOutline, ChapterVersion
+from ...models.project_memory import ProjectMemory
+from ...models.writer_persona import WriterPersona
 from ...schemas.novel import (
     Chapter as ChapterSchema,
     ChapterGenerationStatus,
@@ -57,6 +61,7 @@ from ...services.writer_context_builder import WriterContextBuilder
 from ...services.chapter_guardrails import ChapterGuardrails
 from ...services.ai_review_service import AIReviewService
 from ...services.finalize_service import FinalizeService
+from ...services.review_context_builder import ReviewContextBuilder
 from ...utils.json_utils import remove_think_tags, unwrap_markdown_json
 from ...repositories.system_config_repository import SystemConfigRepository
 from ...services.pipeline_orchestrator import PipelineOrchestrator
@@ -126,6 +131,126 @@ def _extract_tail_excerpt(text: Optional[str], limit: int = 500) -> str:
     if len(stripped) <= limit:
         return stripped
     return stripped[-limit:]
+
+
+async def _build_review_context(
+    *,
+    session: AsyncSession,
+    novel_service: NovelService,
+    project,
+    project_id: str,
+    chapter_number: int,
+    chapter_mission: Optional[dict] = None,
+    chapter_content: Optional[str] = None,
+) -> Dict[str, object]:
+    blueprint_schema = novel_service._build_blueprint_schema(project)
+    outline = await novel_service.get_outline(project_id, chapter_number)
+
+    chapters = sorted(project.chapters or [], key=lambda item: item.chapter_number)
+    completed_chapters = []
+    previous_summary = "暂无（这是第一章）"
+    previous_tail = "暂无（这是第一章）"
+    latest_previous_number = -1
+
+    outline_map = {item.chapter_number: item for item in (project.outlines or [])}
+    for existing in chapters:
+        if existing.chapter_number >= chapter_number:
+            continue
+        selected_version = existing.selected_version
+        if not selected_version or not selected_version.content:
+            continue
+
+        summary = existing.real_summary or ""
+        existing_outline = outline_map.get(existing.chapter_number)
+        completed_chapters.append(
+            {
+                "chapter_number": existing.chapter_number,
+                "title": existing_outline.title if existing_outline and existing_outline.title else f"第{existing.chapter_number}章",
+                "summary": summary,
+            }
+        )
+
+        if existing.chapter_number > latest_previous_number:
+            latest_previous_number = existing.chapter_number
+            previous_summary = summary or "暂无（这是第一章）"
+            previous_tail = _extract_tail_excerpt(selected_version.content) or "暂无（这是第一章）"
+
+    chapter_blueprint_stmt = select(ChapterBlueprint).where(
+        ChapterBlueprint.project_id == project_id,
+        ChapterBlueprint.chapter_number == chapter_number,
+    )
+    constitution_stmt = select(NovelConstitution).where(NovelConstitution.project_id == project_id)
+    project_memory_stmt = select(ProjectMemory).where(ProjectMemory.project_id == project_id)
+    writer_persona_stmt = (
+        select(WriterPersona)
+        .where(WriterPersona.project_id == project_id, WriterPersona.is_active.is_(True))
+        .limit(1)
+    )
+
+    chapter_blueprint = (await session.execute(chapter_blueprint_stmt)).scalars().first()
+    constitution = (await session.execute(constitution_stmt)).scalars().first()
+    project_memory = (await session.execute(project_memory_stmt)).scalars().first()
+    writer_persona = (await session.execute(writer_persona_stmt)).scalars().first()
+
+    chapter_blueprint_payload = {}
+    if chapter_blueprint:
+        chapter_blueprint_payload = {
+            "chapter_function": chapter_blueprint.chapter_function,
+            "chapter_focus": chapter_blueprint.chapter_focus,
+            "suspense_type": chapter_blueprint.suspense_type,
+            "emotional_arc": chapter_blueprint.emotional_arc,
+            "mission_constraints": chapter_blueprint.mission_constraints or {},
+            "brief_summary": chapter_blueprint.brief_summary or "",
+            "director_script": chapter_blueprint.director_script or "",
+            "beat_sheet": chapter_blueprint.beat_sheet or {},
+        }
+
+    project_memory_payload = {}
+    if project_memory:
+        project_memory_payload = {
+            "global_summary": project_memory.global_summary or "",
+            "plot_arcs": project_memory.plot_arcs or {},
+            "story_timeline_summary": project_memory.story_timeline_summary or "",
+            "last_updated_chapter": project_memory.last_updated_chapter,
+        }
+
+    chapter_outline_payload = {
+        "chapter_number": chapter_number,
+        "title": outline.title if outline else f"第{chapter_number}章",
+        "summary": outline.summary if outline else "",
+        "metadata": outline.metadata if outline and outline.metadata else {},
+    }
+
+    base_context = {
+        "novel_blueprint": blueprint_schema.model_dump(),
+        "chapter_outline": chapter_outline_payload,
+        "chapter_blueprint": chapter_blueprint_payload,
+        "chapter_mission": chapter_mission or {},
+        "project_memory": project_memory_payload,
+        "constitution": constitution.to_prompt_context() if constitution else "",
+        "writer_persona": writer_persona.to_prompt_context() if writer_persona else "",
+        "previous_chapter": {
+            "summary": previous_summary,
+            "tail_excerpt": previous_tail,
+        },
+        "completed_chapters": completed_chapters,
+    }
+
+    # 使用 ReviewContextBuilder 增强上下文
+    try:
+        vector_store = VectorStoreService()
+        llm_service = LLMService(session)
+        context_builder = ReviewContextBuilder(session, vector_store, llm_service)
+        enhanced_context = await context_builder.build_review_context(
+            project_id=project_id,
+            chapter_number=chapter_number,
+            chapter_content=chapter_content,
+            base_context=base_context,
+        )
+        return enhanced_context
+    except Exception:
+        logger.exception("构建增强评审上下文失败，使用基础上下文")
+        return base_context
 
 
 def _normalize_snippet(text: str) -> str:
@@ -1514,11 +1639,14 @@ async def evaluate_chapter(
     llm_service = LLMService(session)
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
-    # 确保预加载 selected_version 关系
+    # 确保预加载 selected_version 与 versions 关系
     from sqlalchemy.orm import selectinload
     stmt = (
         select(Chapter)
-        .options(selectinload(Chapter.selected_version))
+        .options(
+            selectinload(Chapter.selected_version),
+            selectinload(Chapter.versions),
+        )
         .where(
             Chapter.project_id == project_id,
             Chapter.chapter_number == request.chapter_number,
@@ -1526,34 +1654,21 @@ async def evaluate_chapter(
     )
     result = await session.execute(stmt)
     chapter = result.scalars().first()
-    
+
     if not chapter:
         chapter = await novel_service.get_or_create_chapter(project_id, request.chapter_number)
 
-    # 如果没有选中版本，使用最新版本进行评审
+    ordered_versions = sorted(
+        [version for version in (chapter.versions or []) if version.content and version.content.strip()],
+        key=lambda item: item.created_at,
+    )
+
     version_to_evaluate = chapter.selected_version
-    if not version_to_evaluate:
-        # 获取该章节的所有版本，选择最新的一个
-        from sqlalchemy.orm import selectinload
-        stmt_versions = (
-            select(Chapter)
-            .options(selectinload(Chapter.versions))
-            .where(
-                Chapter.project_id == project_id,
-                Chapter.chapter_number == request.chapter_number,
-            )
-        )
-        result_versions = await session.execute(stmt_versions)
-        chapter_with_versions = result_versions.scalars().first()
-        
-        if not chapter_with_versions or not chapter_with_versions.versions:
-            raise HTTPException(status_code=400, detail="该章节还没有生成任何版本，无法进行评审")
-        
-        # 使用最新的版本（列表中的最后一个）
-        version_to_evaluate = chapter_with_versions.versions[-1]
-    
-    if not version_to_evaluate or not version_to_evaluate.content:
-        raise HTTPException(status_code=400, detail="版本内容为空，无法进行评审")
+    if version_to_evaluate and (not version_to_evaluate.content or not version_to_evaluate.content.strip()):
+        version_to_evaluate = None
+
+    if not ordered_versions and not version_to_evaluate:
+        raise HTTPException(status_code=400, detail="该章节还没有生成任何版本，无法进行评审")
 
     chapter.status = "evaluating"
     chapter.generation_progress = 84
@@ -1562,37 +1677,63 @@ async def evaluate_chapter(
     chapter.generation_step_total = 3
     await session.commit()
 
-    eval_prompt = await prompt_service.get_prompt("evaluation")
-    if not eval_prompt:
-        logger.warning("未配置名为 'evaluation' 的评审提示词，将跳过 AI 评审")
-        # 使用 add_chapter_evaluation 创建评审记录
-        await novel_service.add_chapter_evaluation(
-            chapter=chapter,
-            version=version_to_evaluate,
-            feedback="未配置评审提示词",
-            decision="skipped"
-        )
-        return await _load_project_schema(novel_service, project_id, current_user.id)
+    evaluation_feedback: Optional[str] = None
+    evaluation_version: Optional[ChapterVersion] = None
 
     try:
-        evaluation_raw = await llm_service.get_llm_response(
-            system_prompt=eval_prompt,
-            conversation_history=[{"role": "user", "content": version_to_evaluate.content}],
-            temperature=0.3,
-            user_id=current_user.id,
+        # 获取章节内容用于上下文增强
+        chapter_content = None
+        if ordered_versions:
+            # 使用最新版本的内容
+            chapter_content = ordered_versions[-1].content
+        elif version_to_evaluate and version_to_evaluate.content:
+            chapter_content = version_to_evaluate.content
+
+        review_context = await _build_review_context(
+            session=session,
+            novel_service=novel_service,
+            project=project,
+            project_id=project_id,
+            chapter_number=request.chapter_number,
+            chapter_content=chapter_content,
         )
-        evaluation_text = remove_think_tags(evaluation_raw)
-        
-        # 校验 AI 返回的内容不为空
-        if not evaluation_text or len(evaluation_text.strip()) == 0:
-            raise ValueError("评审结果为空")
-        
-        # 使用 add_chapter_evaluation 创建评审记录
-        # 这会自动设置状态为 WAITING_FOR_CONFIRM
+
+        if len(ordered_versions) > 1:
+            ai_review_service = AIReviewService(llm_service, prompt_service)
+            ai_review_result = await ai_review_service.review_versions(
+                versions=[version.content for version in ordered_versions],
+                chapter_mission=review_context.get("chapter_mission") if isinstance(review_context.get("chapter_mission"), dict) else None,
+                user_id=current_user.id,
+                review_context=review_context,
+            )
+            if not ai_review_result:
+                raise ValueError("多版本评审失败")
+
+            evaluation_feedback = json.dumps(
+                ai_review_result.to_evaluation_payload(),
+                ensure_ascii=False,
+            )
+        else:
+            if not version_to_evaluate:
+                version_to_evaluate = ordered_versions[-1]
+            if not version_to_evaluate or not version_to_evaluate.content:
+                raise HTTPException(status_code=400, detail="版本内容为空，无法进行评审")
+
+            ai_review_service = AIReviewService(llm_service, prompt_service)
+            evaluation_text = await ai_review_service.review_single_version(
+                version_content=version_to_evaluate.content,
+                user_id=current_user.id,
+                review_context=review_context,
+            )
+            if not evaluation_text or len(evaluation_text.strip()) == 0:
+                raise ValueError("评审结果为空")
+            evaluation_feedback = evaluation_text
+            evaluation_version = version_to_evaluate
+
         await novel_service.add_chapter_evaluation(
             chapter=chapter,
-            version=version_to_evaluate,
-            feedback=evaluation_text,
+            version=evaluation_version,
+            feedback=evaluation_feedback,
             decision="reviewed"
         )
         logger.info("项目 %s 第 %s 章评审成功", project_id, request.chapter_number)
@@ -1600,7 +1741,7 @@ async def evaluate_chapter(
         logger.exception("项目 %s 第 %s 章评审失败: %s", project_id, request.chapter_number, exc)
         # 回滚事务，恢复状态
         await session.rollback()
-        
+
         # 重新加载 chapter 对象（因为 rollback 后对象已脱离 session）
         stmt = (
             select(Chapter)
@@ -1611,7 +1752,7 @@ async def evaluate_chapter(
         )
         result = await session.execute(stmt)
         chapter = result.scalars().first()
-        
+
         if chapter:
             # 使用 add_chapter_evaluation 创建失败记录
             # 注意：这里不能再用 add_chapter_evaluation，因为它会设置状态为 waiting_for_confirm
@@ -1619,9 +1760,9 @@ async def evaluate_chapter(
             from app.models.novel import ChapterEvaluation
             evaluation_record = ChapterEvaluation(
                 chapter_id=chapter.id,
-                version_id=version_to_evaluate.id,
+                version_id=version_to_evaluate.id if version_to_evaluate else None,
                 decision="failed",
-                feedback=f"评审失败: {str(exc)}",
+                feedback="评审失败，请重试",
                 score=None
             )
             session.add(evaluation_record)
@@ -1631,11 +1772,12 @@ async def evaluate_chapter(
             chapter.generation_step_index = 0
             chapter.generation_step_total = 3
             await session.commit()
-        
+
         # 抛出异常，让前端知道评审失败
-        raise HTTPException(status_code=500, detail=f"评审失败: {str(exc)}")
-    
+        raise HTTPException(status_code=500, detail="评审失败，请重试")
+
     return await _load_project_schema(novel_service, project_id, current_user.id)
+
 
 
 @router.post("/novels/{project_id}/chapters/update-outline", response_model=NovelProjectSchema)

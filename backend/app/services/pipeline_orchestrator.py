@@ -287,6 +287,20 @@ class PipelineOrchestrator:
             versions=versions,
             chapter_mission=chapter_mission,
             user_id=user_id,
+            context={
+                "novel_blueprint": writer_context.get("writer_blueprint") or blueprint_dict,
+                "chapter_outline": {
+                    "chapter_number": chapter_number,
+                    "title": outline_title,
+                    "summary": outline_summary,
+                },
+                "chapter_mission": chapter_mission or {},
+                "previous_chapter": {
+                    "summary": history_context.get("previous_summary", ""),
+                    "tail_excerpt": history_context.get("previous_tail", ""),
+                },
+                "completed_chapters": history_context.get("completed_chapters", []),
+            },
         )
 
         review_summaries: Dict[str, Any] = {}
@@ -975,6 +989,7 @@ class PipelineOrchestrator:
         versions: List[Dict[str, Any]],
         chapter_mission: Optional[dict],
         user_id: int,
+        context: Optional[Dict[str, Any]] = None,
     ) -> Tuple[int, Optional[Dict[str, Any]]]:
         if len(versions) <= 1:
             return 0, None
@@ -986,6 +1001,7 @@ class PipelineOrchestrator:
                 versions=contents,
                 chapter_mission=chapter_mission,
                 user_id=user_id,
+                review_context=context,
             )
         except Exception as exc:
             logger.warning("AI 评审失败，跳过: %s", exc)
@@ -994,11 +1010,17 @@ class PipelineOrchestrator:
         if not ai_review_result:
             return 0, None
 
+        review_map = {
+            review.version_number: review for review in ai_review_result.version_reviews
+        }
         for idx, variant in enumerate(versions):
+            version_review = review_map.get(idx + 1)
             variant.setdefault("metadata", {})["ai_review"] = {
                 "is_best": idx == ai_review_result.best_version_index,
-                "scores": ai_review_result.scores,
-                "evaluation": ai_review_result.overall_evaluation if idx == ai_review_result.best_version_index else None,
+                "scores": version_review.scores if version_review else ai_review_result.scores,
+                "evaluation": version_review.overall_review if version_review else None,
+                "pros": version_review.pros if version_review else [],
+                "cons": version_review.cons if version_review else [],
                 "flaws": ai_review_result.critical_flaws if idx == ai_review_result.best_version_index else None,
                 "suggestions": ai_review_result.refinement_suggestions if idx == ai_review_result.best_version_index else None,
             }
@@ -1009,6 +1031,16 @@ class PipelineOrchestrator:
             "evaluation": ai_review_result.overall_evaluation,
             "flaws": ai_review_result.critical_flaws,
             "suggestions": ai_review_result.refinement_suggestions,
+            "version_reviews": [
+                {
+                    "version_number": review.version_number,
+                    "pros": review.pros,
+                    "cons": review.cons,
+                    "overall_review": review.overall_review,
+                    "scores": review.scores,
+                }
+                for review in ai_review_result.version_reviews
+            ],
         }
 
     async def _run_self_critique(
