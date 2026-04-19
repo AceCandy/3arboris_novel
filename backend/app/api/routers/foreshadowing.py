@@ -2,12 +2,11 @@
 """伏笔管理 API 接口"""
 import logging
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...db.session import get_session
 from ...services.foreshadowing_service import ForeshadowingService
-from ...models.foreshadowing import Foreshadowing, ForeshadowingReminder, ForeshadowingAnalysis
 from ...core.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -73,6 +72,14 @@ class AnalysisResponse(BaseModel):
     recommendations: List[str]
 
 
+def _handle_foreshadowing_error(action: str) -> HTTPException:
+    logger.exception("%s失败", action)
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=f"{action}失败，请稍后重试",
+    )
+
+
 @router.post("/{project_id}/foreshadowings", response_model=ForeshadowingResponse)
 async def create_foreshadowing(
     project_id: str,
@@ -108,9 +115,8 @@ async def create_foreshadowing(
             author_note=foreshadowing.author_note,
             created_at=foreshadowing.created_at.isoformat(),
         )
-    except Exception as e:
-        logger.exception(f"创建伏笔失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise _handle_foreshadowing_error("创建伏笔")
 
 
 @router.get("/{project_id}/foreshadowings")
@@ -154,9 +160,8 @@ async def list_foreshadowings(
                 for f in foreshadowings
             ],
         }
-    except Exception as e:
-        logger.exception(f"获取伏笔列表失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise _handle_foreshadowing_error("获取伏笔列表")
 
 
 @router.post("/{project_id}/foreshadowings/{foreshadowing_id}/resolve")
@@ -185,9 +190,10 @@ async def resolve_foreshadowing(
             "message": "伏笔已标记为回收",
             "resolution_id": resolution.id,
         }
-    except Exception as e:
-        logger.exception(f"标记伏笔回收失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception:
+        raise _handle_foreshadowing_error("标记伏笔回收")
 
 
 @router.get("/{project_id}/foreshadowings/reminders")
@@ -216,9 +222,8 @@ async def get_reminders(
                 for r in reminders
             ],
         }
-    except Exception as e:
-        logger.exception(f"获取提醒失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise _handle_foreshadowing_error("获取提醒")
 
 
 @router.post("/{project_id}/foreshadowings/reminders/{reminder_id}/dismiss")
@@ -239,9 +244,10 @@ async def dismiss_reminder(
             "status": "success",
             "message": "提醒已忽略",
         }
-    except Exception as e:
-        logger.exception(f"忽略提醒失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except Exception:
+        raise _handle_foreshadowing_error("忽略提醒")
 
 
 @router.get("/{project_id}/foreshadowings/analysis")
@@ -268,6 +274,5 @@ async def get_analysis(
             "pattern_analysis": analysis.pattern_analysis or {},
             "analyzed_at": analysis.analyzed_at.isoformat(),
         }
-    except Exception as e:
-        logger.exception(f"获取分析失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise _handle_foreshadowing_error("获取分析")

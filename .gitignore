@@ -28,3 +28,4 @@ __pycache__/
 
 rag_vectors.db
 .claude/worktrees/
+.ace-tool/
