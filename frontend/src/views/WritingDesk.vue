@@ -88,8 +88,65 @@
     <WDEvaluationDetailModal
       :show="showEvaluationDetailModal"
       :evaluation="selectedChapter?.evaluation || null"
+      :is-optimizing-recommended-version="isOptimizingRecommendedVersion"
       @close="showEvaluationDetailModal = false"
+      @optimize-recommended-version="optimizeRecommendedVersionFromEvaluation"
     />
+    <Teleport to="body">
+      <div
+        v-if="showRecommendedOptimizeResultModal"
+        class="md-dialog-overlay"
+        @click.self="closeRecommendedOptimizeResult"
+      >
+        <div class="md-dialog m3-result-dialog flex flex-col">
+          <div class="p-6 border-b" style="border-bottom-color: var(--md-outline-variant);">
+            <div class="flex items-center justify-between gap-4">
+              <div>
+                <h3 class="md-headline-small font-semibold">评审优化结果预览</h3>
+                <p class="md-body-small md-on-surface-variant mt-1">{{ recommendedOptimizeResultNotes }}</p>
+              </div>
+              <button
+                @click="closeRecommendedOptimizeResult"
+                :disabled="isApplyingRecommendedOptimization"
+                class="md-icon-btn md-ripple disabled:opacity-50"
+              >
+                <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+                  <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="flex-1 overflow-y-auto p-6">
+            <div class="whitespace-pre-wrap leading-relaxed" style="color: var(--md-on-surface);">
+              <p v-for="(paragraph, index) in recommendedOptimizedParagraphs" :key="`recommended-optimized-${index}`" class="mb-4 last:mb-0">{{ paragraph }}</p>
+            </div>
+          </div>
+          <div class="p-6 border-t flex items-center justify-end gap-3" style="border-top-color: var(--md-outline-variant); background-color: var(--md-surface-container-low);">
+            <div class="md-body-small md-on-surface-variant mr-auto">
+              {{ recommendedOptimizedWordCount }} 字
+            </div>
+            <button
+              @click="closeRecommendedOptimizeResult"
+              :disabled="isApplyingRecommendedOptimization"
+              class="md-btn md-btn-outlined md-ripple disabled:opacity-50"
+            >
+              取消
+            </button>
+            <button
+              @click="applyRecommendedOptimization"
+              :disabled="isApplyingRecommendedOptimization"
+              class="md-btn md-btn-filled md-ripple disabled:opacity-50 flex items-center gap-2"
+              style="background-color: var(--md-success); color: var(--md-on-success);"
+            >
+              <svg v-if="isApplyingRecommendedOptimization" class="w-4 h-4 animate-spin" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
+              </svg>
+              {{ isApplyingRecommendedOptimization ? '应用中...' : '应用优化' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
     <WDEditChapterModal
       :show="showEditChapterModal"
       :chapter="editingChapter"
@@ -108,9 +165,10 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
+import { OptimizerAPI } from '@/api/novel'
 import type { Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion } from '@/api/novel'
 import { globalAlert } from '@/composables/useAlert'
-import Tooltip from '@/components/Tooltip.vue'
+import { countNonWhitespaceChars } from '@/utils/text'
 import WDHeader from '@/components/writing-desk/WDHeader.vue'
 import WDSidebar from '@/components/writing-desk/WDSidebar.vue'
 import WDWorkspace from '@/components/writing-desk/WDWorkspace.vue'
@@ -141,6 +199,11 @@ const editingChapter = ref<ChapterOutline | null>(null)
 const isGeneratingOutline = ref(false)
 const showGenerateOutlineModal = ref(false)
 const isFetchingChapterStatus = ref(false)
+const isOptimizingRecommendedVersion = ref(false)
+const showRecommendedOptimizeResultModal = ref(false)
+const isApplyingRecommendedOptimization = ref(false)
+const recommendedOptimizedContent = ref('')
+const recommendedOptimizeResultNotes = ref('')
 
 // 计算属性
 const project = computed(() => novelStore.currentProject)
@@ -350,6 +413,218 @@ const availableVersions = computed<ChapterVersion[]>(() => {
 
   return []
 })
+
+const recommendedOptimizedParagraphs = computed(() => {
+  if (!recommendedOptimizedContent.value.trim()) return []
+  return recommendedOptimizedContent.value
+    .split(/\n{2,}/)
+    .map(paragraph => paragraph.trim())
+    .filter(Boolean)
+})
+
+const recommendedOptimizedWordCount = computed(() => {
+  return countNonWhitespaceChars(recommendedOptimizedContent.value)
+})
+
+const tryParseOptimizerPayload = (rawText: string): Record<string, unknown> | null => {
+  if (!rawText) return null
+  const text = rawText.trim()
+  if (!text) return null
+
+  const candidates: string[] = [text]
+  const fenceMatch = text.match(/```(?:json|JSON)?\s*([\s\S]*?)\s*```/)
+  if (fenceMatch?.[1]) {
+    const fenced = fenceMatch[1].trim()
+    if (fenced && fenced !== text) candidates.unshift(fenced)
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return null
+}
+
+const decodeJsonStringFragment = (fragment: string): string => {
+  try {
+    return JSON.parse(`"${fragment}"`) as string
+  } catch {
+    return fragment
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+  }
+}
+
+const extractJsonField = (rawText: string, field: 'optimized_content' | 'optimization_notes'): string | null => {
+  const pattern = new RegExp(`"${field}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`, 's')
+  const match = rawText.match(pattern)
+  if (!match?.[1]) return null
+  return decodeJsonStringFragment(match[1])
+}
+
+const normalizeOptimizeResult = (
+  contentRaw: string,
+  notesRaw: string
+): { content: string; notes: string } => {
+  let content = (contentRaw || '').trim()
+  let notes = (notesRaw || '').trim()
+  const seen = new Set<string>()
+
+  for (let i = 0; i < 2; i++) {
+    if (!content || seen.has(content)) break
+    seen.add(content)
+    const payload = tryParseOptimizerPayload(content)
+    if (!payload) break
+    const nestedContent = payload.optimized_content
+    if (typeof nestedContent !== 'string' || !nestedContent.trim()) break
+    content = nestedContent.trim()
+    if (!notes && typeof payload.optimization_notes === 'string') {
+      notes = payload.optimization_notes.trim()
+    }
+  }
+
+  if (content.includes('"optimized_content"')) {
+    const extractedContent = extractJsonField(content, 'optimized_content')
+    if (extractedContent?.trim()) {
+      content = extractedContent.trim()
+    }
+    if (!notes) {
+      const extractedNotes = extractJsonField(contentRaw, 'optimization_notes')
+      if (extractedNotes?.trim()) {
+        notes = extractedNotes.trim()
+      }
+    }
+  }
+
+  const fenced = content.match(/```(?:json|JSON)?\s*([\s\S]*?)\s*```/)
+  if (fenced?.[1]) {
+    content = fenced[1].trim()
+  }
+
+  return {
+    content,
+    notes: notes || '优化完成'
+  }
+}
+
+const parseEvaluationPayload = (evaluation: string | null): Record<string, any> | null => {
+  if (!evaluation) return null
+  try {
+    let data = JSON.parse(evaluation)
+    if (typeof data === 'string') {
+      data = JSON.parse(data)
+    }
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      return data as Record<string, any>
+    }
+  } catch (error) {
+    console.error('解析评审结果失败:', error)
+  }
+  return null
+}
+
+const closeRecommendedOptimizeResult = () => {
+  if (isApplyingRecommendedOptimization.value) return
+  showRecommendedOptimizeResultModal.value = false
+}
+
+const optimizeRecommendedVersionFromEvaluation = async () => {
+  if (!project.value || !selectedChapter.value) {
+    globalAlert.showError('缺少章节信息，无法执行优化')
+    return
+  }
+
+  const evaluationPayload = parseEvaluationPayload(selectedChapter.value.evaluation || null)
+  if (!evaluationPayload) {
+    globalAlert.showError('当前评审结果无法解析，暂时不能执行评审优化')
+    return
+  }
+
+  const bestChoice = Number(evaluationPayload.best_choice)
+  if (!Number.isInteger(bestChoice) || bestChoice < 1) {
+    globalAlert.showError('当前评审结果缺少推荐版本，无法执行优化')
+    return
+  }
+
+  const versionIndex = bestChoice - 1
+  const sourceVersion = availableVersions.value[versionIndex]
+  if (!sourceVersion?.content?.trim()) {
+    globalAlert.showError('推荐版本正文不存在，无法执行优化')
+    return
+  }
+
+  const versionReview = evaluationPayload.evaluation?.[`version${bestChoice}`] || {}
+  isOptimizingRecommendedVersion.value = true
+
+  try {
+    const result = await OptimizerAPI.optimizeRecommendedVersion({
+      project_id: project.value.id,
+      chapter_number: selectedChapter.value.chapter_number,
+      source_content: cleanVersionContent(sourceVersion.content),
+      review_summary: String(evaluationPayload.reason_for_choice || '').trim(),
+      version_number: bestChoice,
+      version_review: versionReview
+    })
+
+    const normalized = normalizeOptimizeResult(result.optimized_content, result.optimization_notes)
+    if (!normalized.content.trim()) {
+      globalAlert.showError('优化结果为空，请稍后重试')
+      return
+    }
+
+    recommendedOptimizedContent.value = normalized.content
+    recommendedOptimizeResultNotes.value = normalized.notes
+    showRecommendedOptimizeResultModal.value = true
+  } catch (error: any) {
+    console.error('评审优化失败:', error)
+    globalAlert.showError(error.message || '评审优化失败，请稍后重试')
+  } finally {
+    isOptimizingRecommendedVersion.value = false
+  }
+}
+
+const applyRecommendedOptimization = async () => {
+  if (!project.value || !selectedChapter.value || !recommendedOptimizedContent.value.trim()) {
+    return
+  }
+
+  isApplyingRecommendedOptimization.value = true
+
+  try {
+    const applyResult = await OptimizerAPI.applyOptimization(
+      project.value.id,
+      selectedChapter.value.chapter_number,
+      recommendedOptimizedContent.value
+    )
+
+    const syncStats = applyResult.foreshadowing_sync
+    if (syncStats) {
+      globalAlert.showSuccess(
+        `优化内容已应用，伏笔同步：新增 ${syncStats.created}，推进 ${syncStats.developing}，回收 ${syncStats.revealed}`
+      )
+    } else {
+      globalAlert.showSuccess('优化内容已应用')
+    }
+
+    showRecommendedOptimizeResultModal.value = false
+    showEvaluationDetailModal.value = false
+    recommendedOptimizedContent.value = ''
+    recommendedOptimizeResultNotes.value = ''
+    await novelStore.loadChapter(selectedChapter.value.chapter_number)
+  } catch (error: any) {
+    console.error('应用评审优化失败:', error)
+    globalAlert.showError(error.message || '应用优化失败，请稍后重试')
+  } finally {
+    isApplyingRecommendedOptimization.value = false
+  }
+}
 
 
 // 方法
@@ -738,6 +1013,12 @@ onUnmounted(() => {
   .m3-shell {
     animation: none;
   }
+}
+
+.m3-result-dialog {
+  max-width: min(900px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  border-radius: var(--md-radius-xl);
 }
 
 /* 自定义样式 */

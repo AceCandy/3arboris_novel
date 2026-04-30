@@ -6,6 +6,12 @@ import vue from '@vitejs/plugin-vue'
 import vueJsx from '@vitejs/plugin-vue-jsx'
 import vueDevTools from 'vite-plugin-vue-devtools'
 
+const frontendHost = process.env.FRONTEND_HOST || '0.0.0.0'
+const frontendPort = Number(process.env.FRONTEND_PORT || '5173')
+const frontendHmrHost = process.env.FRONTEND_HMR_HOST || 'localhost'
+const backendProxyHost = process.env.BACKEND_PROXY_HOST || '127.0.0.1'
+const backendPort = Number(process.env.BACKEND_PORT || '8000')
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
@@ -19,18 +25,18 @@ export default defineConfig({
     },
   },
   server: {
-    host: '127.0.0.1',
-    port: 5173,
+    host: frontendHost,
+    port: frontendPort,
     strictPort: true,
     hmr: {
       protocol: 'ws',
-      host: '127.0.0.1',
-      port: 5173,
-      clientPort: 5173,
+      host: frontendHmrHost,
+      port: frontendPort,
+      clientPort: frontendPort,
     },
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        target: `http://${backendProxyHost}:${backendPort}`,
         changeOrigin: true,
       }
     }

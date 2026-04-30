@@ -68,7 +68,7 @@ npm install
 npm run dev
 ```
 
-访问地址：
+默认访问地址：
 
 - 前端：`http://127.0.0.1:5173`
 - API：`http://127.0.0.1:8000`
@@ -79,6 +79,15 @@ npm run dev
 - Windows CMD：`dev.bat`
 - PowerShell：`powershell -ExecutionPolicy Bypass -File .\dev.ps1`
 - Bash：`bash ./dev.sh`
+
+辅助脚本行为：
+
+- 若 `frontend/node_modules` 不存在，会自动执行依赖安装
+- 若 `backend/.venv` 不存在，会自动创建虚拟环境
+- 若当前 Python 环境缺少 `uvicorn`，会自动安装 `backend/requirements.txt`
+- 若默认端口 `8000` 或 `5173` 已占用，会自动切换到可用端口
+- 前后端开发服务默认监听 `0.0.0.0`，可通过局域网 IP 访问
+- 脚本启动后会输出本机访问地址和实际 API 代理地址
 
 ### Docker（本地）
 

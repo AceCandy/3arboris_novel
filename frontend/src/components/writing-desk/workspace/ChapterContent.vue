@@ -2,12 +2,14 @@
 <template>
   <div class="space-y-6">
     <div class="md-card md-card-filled p-4 mb-6" style="border-radius: var(--md-radius-lg); background-color: var(--md-success-container);">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-2" style="color: var(--md-on-success-container);">
-          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+      <div class="flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2 min-w-0" style="color: var(--md-on-success-container);">
+          <svg class="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
             <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path>
           </svg>
-          <span class="font-medium">这个章节已经完成</span>
+          <div class="flex items-center gap-2 flex-wrap min-w-0">
+            <span class="font-medium">这个章节已经完成</span>
+          </div>
         </div>
 
         <button
@@ -26,11 +28,19 @@
 
     <div class="md-card md-card-outlined p-6" style="border-radius: var(--md-radius-xl);">
       <div class="flex items-center justify-between mb-4 gap-3">
-        <h4 class="md-title-medium font-semibold">章节内容</h4>
-        <div class="flex items-center gap-3">
-          <div class="md-body-small md-on-surface-variant">
-            约 {{ Math.round(cleanVersionContent(selectedChapter.content || '').length / 100) * 100 }} 字
-          </div>
+        <Tooltip :text="contentTooltipText" :show-delay="150">
+          <button
+            type="button"
+            class="md-title-medium font-semibold p-0 bg-transparent border-0 appearance-none text-left transition-opacity hover:opacity-80 cursor-pointer"
+            :class="hasChapterContent ? '' : 'opacity-50 cursor-not-allowed'"
+            :disabled="!hasChapterContent"
+            @click="copyChapterContent(selectedChapter)"
+            @mouseleave="resetContentTooltip"
+          >
+            章节内容
+          </button>
+        </Tooltip>
+        <div class="flex items-center gap-3 flex-wrap justify-end">
           <!-- 分层优化按钮 -->
           <button
             class="md-btn md-btn-tonal md-ripple flex items-center gap-1"
@@ -199,7 +209,7 @@
           </div>
           <div class="p-6 border-t flex items-center justify-end gap-3" style="border-top-color: var(--md-outline-variant);">
             <div class="md-body-small md-on-surface-variant m3-preview-metric">
-              共 {{ optimizedPreviewCharCount }} 字
+              {{ optimizedPreviewWordCount }} 字
             </div>
             <button
               @click="reselectOptimization"
@@ -234,10 +244,12 @@
 
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue'
+import Tooltip from '@/components/Tooltip.vue'
 import { globalAlert } from '@/composables/useAlert'
 import type { Chapter } from '@/api/novel'
 import { OptimizerAPI } from '@/api/novel'
 import { useNovelStore } from '@/stores/novel'
+import { countNonWhitespaceChars } from '@/utils/text'
 
 interface Props {
   selectedChapter: Chapter
@@ -408,8 +420,16 @@ const optimizedPreviewText = computed(() =>
   cleanVersionContent(optimizedContent.value || '')
 )
 
-const optimizedPreviewCharCount = computed(() => optimizedPreviewText.value.length)
+const optimizedPreviewWordCount = computed(() =>
+  countNonWhitespaceChars(optimizedPreviewText.value)
+)
 const hasOptimizedResult = computed(() => Boolean(optimizedPreviewText.value.trim()))
+const hasChapterContent = computed(() => Boolean(cleanVersionContent(props.selectedChapter.content || '').trim()))
+const contentTooltipText = ref('点击复制')
+
+const resetContentTooltip = () => {
+  contentTooltipText.value = '点击复制'
+}
 
 const optimizedDisplayParagraphs = computed(() =>
   splitChapterParagraphs(optimizedPreviewText.value)
@@ -454,6 +474,56 @@ const exportChapterAsTxt = (chapter?: Chapter | null) => {
   link.click()
   document.body.removeChild(link)
   URL.revokeObjectURL(url)
+}
+
+const copyTextLegacy = (text: string): boolean => {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', 'readonly')
+  textarea.style.position = 'fixed'
+  textarea.style.top = '-9999px'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+
+  let copied = false
+  try {
+    copied = document.execCommand('copy')
+  } catch (error) {
+    copied = false
+  }
+
+  document.body.removeChild(textarea)
+  return copied
+}
+
+const copyText = async (text: string) => {
+  try {
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+
+    return copyTextLegacy(text)
+  } catch (error) {
+    console.error('复制失败:', error)
+    return copyTextLegacy(text)
+  }
+}
+
+const copyChapterContent = async (chapter?: Chapter | null) => {
+  if (!chapter) return
+
+  const content = cleanVersionContent(chapter.content || '').trim()
+  if (!content) return
+
+  const copied = await copyText(content)
+  contentTooltipText.value = copied ? '复制成功' : '复制失败'
+
+  if (!copied) {
+    globalAlert.showError('复制失败，请手动选择文本复制。')
+  }
 }
 
 const tryParseOptimizerPayload = (rawText: string): Record<string, unknown> | null => {

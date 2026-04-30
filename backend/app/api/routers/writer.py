@@ -75,7 +75,9 @@ MIN_CHAPTER_WORD_COUNT = 2200
 WRITER_GENERATION_MAX_TOKENS = 7000
 MIN_CHAPTER_VERSION_COUNT = 1
 MAX_CHAPTER_VERSION_COUNT = 2
-MAX_AUTO_FORESHADOWINGS_PER_CHAPTER = 5
+MAX_AUTO_FORESHADOWINGS_PER_CHAPTER = 3
+LLM_FORESHADOWING_REVIEW_LIMIT = 8
+LLM_FORESHADOWING_ACTIVE_LIMIT = 12
 
 _FORESHADOWING_RULES = [
     {
@@ -338,8 +340,8 @@ def _extract_foreshadowing_candidates(content: str) -> List[dict]:
         cue_hits = [kw for kw in _QUESTION_CUES if kw in sentence]
         if has_question_mark and cue_hits:
             add_candidate(sentence, "question", 0.74, "major", cue_hits[:3])
-        if len(candidates) >= MAX_AUTO_FORESHADOWINGS_PER_CHAPTER:
-            return candidates[:MAX_AUTO_FORESHADOWINGS_PER_CHAPTER]
+        if len(candidates) >= LLM_FORESHADOWING_REVIEW_LIMIT:
+            return candidates[:LLM_FORESHADOWING_REVIEW_LIMIT]
 
     # 2) 神秘/线索/铺垫：按句匹配，不再整段窗口切割，减少重叠噪声
     for sentence in sentences:
@@ -369,10 +371,212 @@ def _extract_foreshadowing_candidates(content: str) -> List[dict]:
                 rule["importance"],
                 matched_keywords[:4],
             )
-            if len(candidates) >= MAX_AUTO_FORESHADOWINGS_PER_CHAPTER:
-                return candidates[:MAX_AUTO_FORESHADOWINGS_PER_CHAPTER]
+            if len(candidates) >= LLM_FORESHADOWING_REVIEW_LIMIT:
+                return candidates[:LLM_FORESHADOWING_REVIEW_LIMIT]
 
-    return candidates[:MAX_AUTO_FORESHADOWINGS_PER_CHAPTER]
+    return candidates[:LLM_FORESHADOWING_REVIEW_LIMIT]
+
+
+async def _refine_foreshadowing_candidates_with_llm(
+    session: AsyncSession,
+    *,
+    user_id: Optional[int],
+    chapter_number: int,
+    content: str,
+    candidates: List[dict],
+) -> List[dict]:
+    if not candidates:
+        return []
+
+    limited_candidates = candidates[:LLM_FORESHADOWING_REVIEW_LIMIT]
+    candidate_payload = [
+        {
+            "id": idx,
+            "content": candidate["content"],
+            "type": candidate["type"],
+            "keywords": candidate.get("keywords") or [],
+            "importance": candidate.get("importance") or "minor",
+            "confidence": candidate.get("confidence") or 0.5,
+        }
+        for idx, candidate in enumerate(limited_candidates)
+    ]
+    prompt = f"""
+你是长篇小说伏笔编辑，只保留真正有后续叙事价值的伏笔。
+
+判定标准：
+- 保留会制造明确悬念、承诺、异常线索、身份/真相问题，或后文需要兑现的信息。
+- 删除普通心理描写、气氛描写、一次性动作、泛泛疑问、普通计划、重复背景信息。
+- 数量必须克制；没有足够意义就返回空数组。
+- 每章最多保留 {MAX_AUTO_FORESHADOWINGS_PER_CHAPTER} 个，优先保留最强的。
+- 不要创造候选之外的新伏笔。
+
+输出 JSON：
+{{
+  "items": [
+    {{
+      "id": 0,
+      "keep": true,
+      "type": "mystery|question|clue|setup",
+      "importance": "major|minor|subtle",
+      "keywords": ["2到6字关键词"],
+      "confidence": 0.0
+    }}
+  ]
+}}
+
+第 {chapter_number} 章候选：
+{json.dumps(candidate_payload, ensure_ascii=False)}
+
+章节内容节选：
+{content[:4000]}
+""".strip()
+
+    try:
+        response = await LLMService(session).get_llm_response(
+            system_prompt="你只输出合法 JSON，不输出解释。",
+            conversation_history=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            user_id=user_id,
+            timeout=90.0,
+            response_format="json_object",
+            max_tokens=1200,
+        )
+        normalized = unwrap_markdown_json(remove_think_tags(response))
+        data = json.loads(normalized)
+    except Exception as exc:
+        logger.warning(
+            "LLM 伏笔候选精筛失败，使用规则候选 project_chapter=%s user_id=%s err=%s",
+            chapter_number,
+            user_id,
+            exc,
+        )
+        return candidates[:MAX_AUTO_FORESHADOWINGS_PER_CHAPTER]
+
+    raw_items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(raw_items, list):
+        return candidates[:MAX_AUTO_FORESHADOWINGS_PER_CHAPTER]
+
+    refined: List[dict] = []
+    seen_ids = set()
+    allowed_types = {"mystery", "question", "clue", "setup"}
+    allowed_importance = {"major", "minor", "subtle"}
+    for item in raw_items:
+        if not isinstance(item, dict) or not item.get("keep"):
+            continue
+        item_id = item.get("id")
+        if not isinstance(item_id, int) or item_id in seen_ids or item_id < 0 or item_id >= len(limited_candidates):
+            continue
+        seen_ids.add(item_id)
+        source = limited_candidates[item_id]
+        keywords = [
+            keyword.strip()
+            for keyword in item.get("keywords", [])
+            if isinstance(keyword, str) and 2 <= len(keyword.strip()) <= 8
+        ][:5]
+        if not keywords:
+            keywords = source.get("keywords") or _extract_keyword_anchors(source["content"], max_count=5)
+        confidence = item.get("confidence")
+        if not isinstance(confidence, (int, float)):
+            confidence = source.get("confidence") or 0.5
+        refined.append(
+            {
+                "content": source["content"],
+                "type": item.get("type") if item.get("type") in allowed_types else source["type"],
+                "keywords": keywords,
+                "importance": item.get("importance") if item.get("importance") in allowed_importance else source.get("importance", "minor"),
+                "confidence": max(0.0, min(1.0, float(confidence))),
+            }
+        )
+        if len(refined) >= MAX_AUTO_FORESHADOWINGS_PER_CHAPTER:
+            break
+
+    return refined
+
+
+async def _judge_foreshadowing_status_with_llm(
+    session: AsyncSession,
+    *,
+    user_id: Optional[int],
+    chapter_number: int,
+    content: str,
+    foreshadowings: List[Foreshadowing],
+) -> Dict[int, str]:
+    if not foreshadowings:
+        return {}
+
+    payload = []
+    for fs in foreshadowings[:LLM_FORESHADOWING_ACTIVE_LIMIT]:
+        payload.append(
+            {
+                "id": fs.id,
+                "status": fs.status,
+                "content": fs.content,
+                "keywords": fs.keywords or [],
+            }
+        )
+    prompt = f"""
+你是长篇小说伏笔编辑，判断本章是否真正推进或回收历史伏笔。
+
+状态只能选择：
+- revealed：本章明确给出答案、真相、兑现承诺，读者能确认该伏笔已回收。
+- developing：本章只是重新提及、强化、给出新线索，但还没有真正回收。
+- unchanged：只是词语重复、氛围相似、无关提及，不能算推进或回收。
+
+要求：
+- 不要因为出现关键词就判定回收。
+- 回收必须有语义上的解释、揭示、兑现或因果闭合。
+- 输出 JSON，不要解释。
+
+输出 JSON：
+{{
+  "items": [
+    {{"id": 1, "status": "revealed|developing|unchanged"}}
+  ]
+}}
+
+第 {chapter_number} 章内容节选：
+{content[:5000]}
+
+历史伏笔：
+{json.dumps(payload, ensure_ascii=False)}
+""".strip()
+
+    try:
+        response = await LLMService(session).get_llm_response(
+            system_prompt="你只输出合法 JSON，不输出解释。",
+            conversation_history=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            user_id=user_id,
+            timeout=90.0,
+            response_format="json_object",
+            max_tokens=1200,
+        )
+        normalized = unwrap_markdown_json(remove_think_tags(response))
+        data = json.loads(normalized)
+    except Exception as exc:
+        logger.warning(
+            "LLM 伏笔状态判定失败，使用规则状态 project_chapter=%s user_id=%s err=%s",
+            chapter_number,
+            user_id,
+            exc,
+        )
+        return {}
+
+    raw_items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(raw_items, list):
+        return {}
+
+    allowed_statuses = {"revealed", "developing", "unchanged"}
+    result: Dict[int, str] = {}
+    valid_ids = {fs.id for fs in foreshadowings}
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        item_id = item.get("id")
+        status = item.get("status")
+        if isinstance(item_id, int) and item_id in valid_ids and status in allowed_statuses:
+            result[item_id] = status
+    return result
 
 
 def _contains_any(text: str, needles: List[str]) -> bool:
@@ -401,6 +605,7 @@ async def _sync_foreshadowings_for_chapter(
     project_id: str,
     chapter: Chapter,
     content: str,
+    user_id: Optional[int] = None,
 ) -> dict:
     """
     将定稿章节内容同步到 foreshadowings 表：
@@ -409,7 +614,36 @@ async def _sync_foreshadowings_for_chapter(
     """
     normalized_content = (content or "").strip()
 
-    # 每次重建当前章节的自动伏笔，避免重复与脏数据累积。
+    candidates: List[dict] = []
+    active_foreshadowings: List[Foreshadowing] = []
+    status_decisions: Dict[int, str] = {}
+
+    if normalized_content:
+        candidates = _extract_foreshadowing_candidates(normalized_content)
+        candidates = await _refine_foreshadowing_candidates_with_llm(
+            session,
+            user_id=user_id,
+            chapter_number=chapter.chapter_number,
+            content=normalized_content,
+            candidates=candidates,
+        )
+
+        active_result = await session.execute(
+            select(Foreshadowing).where(
+                Foreshadowing.project_id == project_id,
+                Foreshadowing.chapter_number < chapter.chapter_number,
+                Foreshadowing.status.in_(["planted", "developing", "partial"]),
+            )
+        )
+        active_foreshadowings = active_result.scalars().all()
+        status_decisions = await _judge_foreshadowing_status_with_llm(
+            session,
+            user_id=user_id,
+            chapter_number=chapter.chapter_number,
+            content=normalized_content,
+            foreshadowings=active_foreshadowings,
+        )
+
     await session.execute(
         delete(Foreshadowing).where(
             Foreshadowing.project_id == project_id,
@@ -423,7 +657,6 @@ async def _sync_foreshadowings_for_chapter(
     developing_count = 0
 
     if normalized_content:
-        candidates = _extract_foreshadowing_candidates(normalized_content)
         reveal_offset_by_importance = {"major": 8, "minor": 4, "subtle": 12}
         for candidate in candidates:
             target_offset = reveal_offset_by_importance.get(candidate["importance"], 6)
@@ -444,21 +677,21 @@ async def _sync_foreshadowings_for_chapter(
             session.add(foreshadowing)
         created_count = len(candidates)
 
-        # 推进历史活跃伏笔状态（不处理本章新建项）
-        active_result = await session.execute(
-            select(Foreshadowing).where(
-                Foreshadowing.project_id == project_id,
-                Foreshadowing.chapter_number < chapter.chapter_number,
-                Foreshadowing.status.in_(["planted", "developing", "partial"]),
-            )
-        )
-        active_foreshadowings = active_result.scalars().all()
         for fs in active_foreshadowings:
             anchors = [kw for kw in (fs.keywords or []) if isinstance(kw, str) and len(kw) >= 2]
             if not anchors:
                 anchors = _extract_keyword_anchors(fs.content, max_count=6)
 
-            if _is_payoff_signal(normalized_content, anchors):
+            decision = status_decisions.get(fs.id)
+            if decision is None:
+                if _is_payoff_signal(normalized_content, anchors):
+                    decision = "revealed"
+                elif fs.status == "planted" and _is_reinforce_signal(normalized_content, anchors):
+                    decision = "developing"
+                else:
+                    decision = "unchanged"
+
+            if decision == "revealed":
                 old_status = fs.status
                 fs.status = "revealed"
                 fs.resolved_chapter_id = chapter.id
@@ -469,13 +702,13 @@ async def _sync_foreshadowings_for_chapter(
                         old_status=old_status,
                         new_status="revealed",
                         chapter_number=chapter.chapter_number,
-                        reason="章节文本出现回收信号并命中伏笔关键词",
+                        reason="语义判定本章已回收该伏笔",
                     )
                 )
                 revealed_count += 1
                 continue
 
-            if fs.status == "planted" and _is_reinforce_signal(normalized_content, anchors):
+            if fs.status == "planted" and decision == "developing":
                 fs.status = "developing"
                 session.add(
                     ForeshadowingStatusHistory(
@@ -483,7 +716,7 @@ async def _sync_foreshadowings_for_chapter(
                         old_status="planted",
                         new_status="developing",
                         chapter_number=chapter.chapter_number,
-                        reason="章节文本再次提及伏笔关键词",
+                        reason="语义判定本章继续推进该伏笔",
                     )
                 )
                 developing_count += 1
@@ -500,6 +733,7 @@ async def _sync_foreshadowings_after_finalize(
     project_id: str,
     chapter_number: int,
     content: str,
+    user_id: Optional[int] = None,
 ) -> None:
     """后台任务：在章节定稿/手改后同步伏笔表。"""
     async with AsyncSessionLocal() as session:
@@ -520,6 +754,7 @@ async def _sync_foreshadowings_after_finalize(
                 project_id=project_id,
                 chapter=chapter,
                 content=content,
+                user_id=user_id,
             )
             logger.info(
                 "伏笔同步完成 project=%s chapter=%s created=%s revealed=%s developing=%s",
@@ -793,6 +1028,7 @@ async def _finalize_chapter_async(
                 project_id=project_id,
                 chapter=chapter,
                 content=selected_version.content,
+                user_id=user_id,
             )
             logger.info(
                 "异步定稿伏笔同步完成 project=%s chapter=%s created=%s revealed=%s developing=%s",
@@ -931,6 +1167,7 @@ async def finalize_chapter(
         request.project_id,
         chapter_number,
         selected_version.content,
+        current_user.id,
     )
 
     return FinalizeChapterResponse(
@@ -1622,6 +1859,7 @@ async def select_chapter_version(
         project_id,
         request.chapter_number,
         selected_version.content,
+        current_user.id,
     )
 
     return await _load_project_schema(novel_service, project_id, current_user.id)
@@ -1939,6 +2177,7 @@ async def edit_chapter_content(
         project_id,
         request.chapter_number,
         request.content,
+        current_user.id,
     )
 
     return await _load_project_schema(novel_service, project_id, current_user.id)
@@ -1997,6 +2236,7 @@ async def edit_chapter_content_fast(
         project_id,
         request.chapter_number,
         request.content,
+        current_user.id,
     )
 
     stmt = (

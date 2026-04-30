@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -21,10 +22,12 @@ from pathlib import Path
 from typing import Any
 
 
-BACKEND_HOST = "127.0.0.1"
-BACKEND_PORT = 8000
-FRONTEND_HOST = "127.0.0.1"
-FRONTEND_PORT = 5173
+BACKEND_HOST = "0.0.0.0"
+BACKEND_PROXY_HOST = "127.0.0.1"
+BACKEND_DEFAULT_PORT = 8000
+FRONTEND_HOST = "0.0.0.0"
+FRONTEND_HMR_HOST = "localhost"
+FRONTEND_DEFAULT_PORT = 5173
 
 
 def _powershell_executable() -> str:
@@ -35,18 +38,34 @@ def _powershell_executable() -> str:
     return "powershell"
 
 
-def _resolve_python_executable(repo_root: Path) -> str:
+def _resolve_venv_python(repo_root: Path) -> str | None:
     candidates = [
         repo_root / "backend" / ".venv" / "Scripts" / "python.exe",
+        repo_root / "backend" / ".venv" / "bin" / "python",
         repo_root / ".venv" / "Scripts" / "python.exe",
     ]
     for candidate in candidates:
         if candidate.exists():
             return str(candidate)
+    return None
+
+
+def _resolve_bootstrap_python(repo_root: Path) -> str:
+    venv_python = _resolve_venv_python(repo_root)
+    if venv_python:
+        return venv_python
 
     if shutil.which("python"):
         return "python"
-    raise RuntimeError("Python executable not found. Please install Python or create .venv.")
+    if shutil.which("python3"):
+        return "python3"
+    raise RuntimeError("Python executable not found. Please install Python 3.10+.")
+
+
+def _run_checked(command: list[str], *, cwd: Path, failure_message: str) -> None:
+    result = subprocess.run(command, cwd=cwd, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(failure_message)
 
 
 def _test_python_module(python_exe: str, module_name: str) -> bool:
@@ -62,21 +81,70 @@ def _test_python_module(python_exe: str, module_name: str) -> bool:
         return False
 
 
-def _ensure_backend_dependencies(python_exe: str, backend_dir: Path) -> None:
-    if _test_python_module(python_exe, "uvicorn"):
+def _ensure_frontend_dependencies(frontend_dir: Path) -> None:
+    if (frontend_dir / "node_modules").exists():
         return
 
+    npm_exe = shutil.which("npm.cmd") or shutil.which("npm")
+    if not npm_exe:
+        raise RuntimeError("npm executable not found. Please install Node.js 18+.")
+
+    print("[frontend] node_modules missing. Installing frontend dependencies...")
+    _run_checked([npm_exe, "install"], cwd=frontend_dir, failure_message="Failed to install frontend dependencies.")
+
+
+def _ensure_backend_environment(repo_root: Path, backend_dir: Path) -> str:
+    bootstrap_python = _resolve_bootstrap_python(repo_root)
+    venv_dir = backend_dir / ".venv"
     requirements = backend_dir / "requirements.txt"
+
+    if not venv_dir.exists():
+        print("[backend] .venv missing. Creating virtual environment...")
+        _run_checked(
+            [bootstrap_python, "-m", "venv", str(venv_dir)],
+            cwd=repo_root,
+            failure_message="Failed to create backend virtual environment.",
+        )
+
+    python_exe = _resolve_venv_python(repo_root) or bootstrap_python
+    if _test_python_module(python_exe, "uvicorn"):
+        return python_exe
+
     if not requirements.exists():
         raise RuntimeError(f"uvicorn is missing and requirements.txt not found: {requirements}")
 
     print(f"[backend] uvicorn not found in '{python_exe}'. Installing backend requirements...")
-    result = subprocess.run([python_exe, "-m", "pip", "install", "-r", str(requirements)], check=False)
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to install backend requirements with {python_exe}")
+    _run_checked(
+        [python_exe, "-m", "pip", "install", "-r", str(requirements)],
+        cwd=backend_dir,
+        failure_message=f"Failed to install backend requirements with {python_exe}",
+    )
 
     if not _test_python_module(python_exe, "uvicorn"):
         raise RuntimeError(f"uvicorn still missing after install. Please check Python environment: {python_exe}")
+
+    return python_exe
+
+
+def _is_port_available(host: str, port: int) -> bool:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((host, port))
+    except OSError:
+        return False
+    finally:
+        sock.close()
+    return True
+
+
+def _find_available_port(host: str, start_port: int) -> int:
+    port = start_port
+    while port <= 65535:
+        if _is_port_available(host, port):
+            return port
+        port += 1
+    raise RuntimeError(f"No available port found for {host}:{start_port}-65535")
 
 
 def _load_state(state_file: Path) -> dict[str, Any] | None:
@@ -91,7 +159,6 @@ def _load_state(state_file: Path) -> dict[str, Any] | None:
 
 
 def _stop_pid_tree(pid: int, name: str) -> None:
-    # taskkill /T kills child processes as well.
     result = subprocess.run(
         ["taskkill", "/PID", str(pid), "/T", "/F"],
         capture_output=True,
@@ -141,28 +208,37 @@ def start_servers(repo_root: Path) -> None:
     if not frontend_dir.exists():
         raise RuntimeError(f"Missing frontend directory: {frontend_dir}")
 
-    # Keep behavior aligned with old start script: stop previous tracked processes first.
     stop_servers(repo_root, quiet_when_missing=True)
 
-    python_exe = _resolve_python_executable(repo_root)
-    _ensure_backend_dependencies(python_exe, backend_dir)
+    _ensure_frontend_dependencies(frontend_dir)
+    python_exe = _ensure_backend_environment(repo_root, backend_dir)
+    backend_port = _find_available_port(BACKEND_HOST, BACKEND_DEFAULT_PORT)
+    frontend_port = _find_available_port(FRONTEND_HOST, FRONTEND_DEFAULT_PORT)
     ps_exe = _powershell_executable()
+
+    if backend_port != BACKEND_DEFAULT_PORT:
+        print(f"[backend] default port {BACKEND_DEFAULT_PORT} is in use. Switching to {backend_port}.")
+    if frontend_port != FRONTEND_DEFAULT_PORT:
+        print(f"[frontend] default port {FRONTEND_DEFAULT_PORT} is in use. Switching to {frontend_port}.")
+    if not (backend_dir / ".env").exists() and (backend_dir / "env.example").exists():
+        print("[backend] Hint: backend/.env not found. You can create it from backend/env.example.")
 
     backend_command = f"""
 Set-Location -LiteralPath '{backend_dir}'
-Write-Host '[backend] starting on http://{BACKEND_HOST}:{BACKEND_PORT}'
+Write-Host '[backend] starting on http://{BACKEND_HOST}:{backend_port}'
 Write-Host '[backend] python: {python_exe}'
-& '{python_exe}' -m uvicorn app.main:app --reload --host {BACKEND_HOST} --port {BACKEND_PORT}
+& '{python_exe}' -m uvicorn app.main:app --reload --host {BACKEND_HOST} --port {backend_port}
 """
 
     frontend_command = f"""
 Set-Location -LiteralPath '{frontend_dir}'
-Write-Host '[frontend] starting on http://{FRONTEND_HOST}:{FRONTEND_PORT}'
-if (-not (Test-Path 'node_modules')) {{
-  Write-Host '[frontend] node_modules missing, running npm install...'
-  npm install
-}}
-npm run dev -- --host {FRONTEND_HOST} --port {FRONTEND_PORT}
+$env:BACKEND_PROXY_HOST = '{BACKEND_PROXY_HOST}'
+$env:BACKEND_PORT = '{backend_port}'
+$env:FRONTEND_HOST = '{FRONTEND_HOST}'
+$env:FRONTEND_PORT = '{frontend_port}'
+$env:FRONTEND_HMR_HOST = '{FRONTEND_HMR_HOST}'
+Write-Host '[frontend] starting on http://{FRONTEND_HOST}:{frontend_port}'
+npm run dev
 """
 
     create_console_flag = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
@@ -179,14 +255,18 @@ npm run dev -- --host {FRONTEND_HOST} --port {FRONTEND_PORT}
     state = {
         "backend_pid": backend_proc.pid,
         "frontend_pid": frontend_proc.pid,
-        "backend_url": f"http://{BACKEND_HOST}:{BACKEND_PORT}",
-        "frontend_url": f"http://{FRONTEND_HOST}:{FRONTEND_PORT}",
+        "backend_url": f"http://{BACKEND_HOST}:{backend_port}",
+        "frontend_url": f"http://{FRONTEND_HOST}:{frontend_port}",
+        "local_frontend_url": f"http://127.0.0.1:{frontend_port}",
+        "local_api_proxy": f"http://{BACKEND_PROXY_HOST}:{backend_port}/api",
         "started_at": datetime.now(timezone.utc).isoformat(),
     }
     state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print(f"Backend started (PID: {backend_proc.pid}) -> http://{BACKEND_HOST}:{BACKEND_PORT}")
-    print(f"Frontend started (PID: {frontend_proc.pid}) -> http://{FRONTEND_HOST}:{FRONTEND_PORT}")
+    print(f"Backend started (PID: {backend_proc.pid}) -> http://{BACKEND_HOST}:{backend_port}")
+    print(f"Frontend started (PID: {frontend_proc.pid}) -> http://{FRONTEND_HOST}:{frontend_port}")
+    print(f"Local frontend -> http://127.0.0.1:{frontend_port}")
+    print(f"Local API proxy -> http://{BACKEND_PROXY_HOST}:{backend_port}/api")
     print(f"State saved to: {state_file}")
 
 
@@ -194,7 +274,6 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent
 
     if len(sys.argv) >= 2:
-        # Optional non-interactive mode.
         mode = sys.argv[1].strip().lower()
         if mode in {"1", "start"}:
             start_servers(repo_root)

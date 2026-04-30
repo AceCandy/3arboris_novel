@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.dependencies import get_current_user
 from ...db.session import get_session
+from ...models.novel import ChapterVersion
+from ...schemas.novel import ChapterGenerationStatus
 from ...schemas.user import UserInDB
 from ...services.llm_service import LLMService
 from ...services.novel_service import NovelService
@@ -32,6 +34,41 @@ _NOTES_FIELD_RE = re.compile(
     r'"optimization_notes"\s*:\s*"(?P<value>(?:\\.|[^"\\])*)"',
     re.DOTALL,
 )
+
+
+DEFAULT_RECOMMENDED_VERSION_PROMPT = """# 小说推荐版本优化专家
+
+你是一位资深小说编辑。你的任务是根据 AI 评审结论，对推荐版本进行一次整体优化。
+
+## 工作要求
+- 保留原章节的核心剧情、人物关系和关键信息
+- 严格参考评审建议，优先修复被指出的问题
+- 保留推荐版本已经成立的优点，不要为了修改而重写全部内容
+- 输出必须是优化后的完整章节正文，不要写解释过程，不要附加分析段落
+- 如果评审建议与正文冲突，以让正文更完整、更自然、更可读为准
+
+## 输入格式
+```json
+{
+  "source_content": "推荐版本正文",
+  "review_summary": "评审建议摘要",
+  "version_number": 1,
+  "version_review": {
+    "overall_review": "综合评价",
+    "pros": ["优点1"],
+    "cons": ["缺点1"]
+  }
+}
+```
+
+## 输出格式
+```json
+{
+  "optimized_content": "优化后的完整章节正文",
+  "optimization_notes": "本次优化重点"
+}
+```
+"""
 
 
 def _decode_json_string_fragment(fragment: str) -> Optional[str]:
@@ -64,7 +101,6 @@ def _load_optimizer_payload(text: str) -> Optional[dict]:
         if isinstance(payload, dict):
             if "optimized_content" in payload:
                 return payload
-            # 兼容被包裹在 data/result 字段内的结构
             for nested in payload.values():
                 if isinstance(nested, dict) and "optimized_content" in nested:
                     return nested
@@ -85,11 +121,9 @@ def _normalize_optimizer_text(raw_text: Optional[str]) -> str:
 
     text = raw_text.strip()
 
-    # 仅在 markdown 代码块场景下做 unwrap，避免误截断普通正文里的花括号。
     if text.startswith("```"):
         text = unwrap_markdown_json(text).strip()
 
-    # 处理模型把完整 JSON 又塞进 optimized_content 的情况。
     if '"optimized_content"' in text:
         nested = _load_optimizer_payload(text)
         if nested and isinstance(nested.get("optimized_content"), str):
@@ -134,7 +168,6 @@ def _parse_optimizer_response(raw_response: str) -> tuple[str, str]:
         if content:
             return content, (notes or "优化完成")
 
-    # 兜底：从非标准文本里按字段名提取字符串值
     extracted_content = _extract_field_by_regex(cleaned, _OPTIMIZED_FIELD_RE)
     extracted_notes = _extract_field_by_regex(cleaned, _NOTES_FIELD_RE)
     if extracted_content:
@@ -160,6 +193,16 @@ class OptimizeResponse(BaseModel):
     dimension: str = Field(..., description="优化维度")
 
 
+class OptimizeRecommendedVersionRequest(BaseModel):
+    """基于评审结果优化推荐版本请求"""
+    project_id: str = Field(..., description="项目ID")
+    chapter_number: int = Field(..., description="章节编号")
+    source_content: str = Field(..., description="推荐版本正文")
+    review_summary: str = Field(..., description="评审建议摘要")
+    version_number: Optional[int] = Field(default=None, description="推荐版本编号")
+    version_review: Optional[dict] = Field(default=None, description="推荐版本详细评审")
+
+
 class ApplyOptimizationRequest(BaseModel):
     """应用优化内容请求"""
     project_id: str = Field(..., description="项目ID")
@@ -167,15 +210,13 @@ class ApplyOptimizationRequest(BaseModel):
     optimized_content: str = Field(..., description="优化后的完整内容")
 
 
-# 优化维度到提示词的映射
 DIMENSION_PROMPT_MAP = {
     "dialogue": "optimize_dialogue",
-    "environment": "optimize_environment", 
+    "environment": "optimize_environment",
     "psychology": "optimize_psychology",
     "rhythm": "optimize_rhythm"
 }
 
-# 默认的节奏优化提示词（如果数据库中没有）
 DEFAULT_RHYTHM_PROMPT = """# 节奏韵律优化专家
 
 你是一位专注于小说节奏和韵律的编辑大师。你的任务是优化文章的节奏感，让阅读体验更加流畅和沉浸。
@@ -232,62 +273,54 @@ async def optimize_chapter(
     novel_service = NovelService(session)
     prompt_service = PromptService(session)
     llm_service = LLMService(session)
-    
-    # 验证项目所有权
+
     project = await novel_service.ensure_project_owner(request.project_id, current_user.id)
-    
-    # 获取章节内容
+
     chapter = next(
         (ch for ch in project.chapters if ch.chapter_number == request.chapter_number),
         None
     )
     if not chapter:
         raise HTTPException(status_code=404, detail="章节不存在")
-    
+
     if not chapter.selected_version or not chapter.selected_version.content:
         raise HTTPException(status_code=400, detail="章节尚未生成内容")
-    
+
     original_content = chapter.selected_version.content
-    
-    # 验证优化维度
+
     if request.dimension not in DIMENSION_PROMPT_MAP:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"不支持的优化维度: {request.dimension}，支持的维度: {list(DIMENSION_PROMPT_MAP.keys())}"
         )
-    
-    # 获取对应的优化提示词
+
     prompt_name = DIMENSION_PROMPT_MAP[request.dimension]
     optimizer_prompt = await prompt_service.get_prompt(prompt_name)
-    
-    # 如果没有找到提示词，使用默认提示词（仅对rhythm维度）
+
     if not optimizer_prompt:
         if request.dimension == "rhythm":
             optimizer_prompt = DEFAULT_RHYTHM_PROMPT
         else:
             raise HTTPException(
-                status_code=500, 
+                status_code=500,
                 detail=f"缺少{request.dimension}优化提示词，请联系管理员配置 '{prompt_name}' 提示词"
             )
-    
-    # 获取角色DNA信息（用于心理活动优化）
+
     character_dna = {}
     if request.dimension == "psychology":
         project_schema = await novel_service._serialize_project(project)
         for char in project_schema.blueprint.characters:
             if "extra" in char and "dna_profile" in char.get("extra", {}):
                 character_dna[char.get("name", "")] = char["extra"]["dna_profile"]
-    
-    # 构建优化请求
+
     optimize_input = {
         "original_content": original_content,
         "additional_notes": request.additional_notes or "无额外指令"
     }
-    
-    # 如果是心理活动优化，添加角色DNA信息
+
     if character_dna:
         optimize_input["character_dna"] = character_dna
-    
+
     logger.info(
         "用户 %s 开始优化项目 %s 第 %s 章，维度: %s",
         current_user.id,
@@ -295,8 +328,7 @@ async def optimize_chapter(
         request.chapter_number,
         request.dimension
     )
-    
-    # 调用LLM进行优化
+
     try:
         response = await llm_service.get_llm_response(
             system_prompt=optimizer_prompt,
@@ -308,22 +340,22 @@ async def optimize_chapter(
             user_id=current_user.id,
             timeout=600.0,
         )
-        
+
         optimized_content, optimization_notes = _parse_optimizer_response(response)
-        
+
         logger.info(
             "项目 %s 第 %s 章 %s 优化完成",
             request.project_id,
             request.chapter_number,
             request.dimension
         )
-        
+
         return OptimizeResponse(
             optimized_content=optimized_content,
             optimization_notes=optimization_notes,
             dimension=request.dimension
         )
-        
+
     except Exception as exc:
         logger.exception(
             "项目 %s 第 %s 章优化失败: %s",
@@ -334,6 +366,87 @@ async def optimize_chapter(
         raise HTTPException(
             status_code=500,
             detail=f"优化过程中发生错误: {str(exc)[:200]}"
+        )
+
+
+@router.post("/optimize-recommended-version", response_model=OptimizeResponse)
+async def optimize_recommended_version(
+    request: OptimizeRecommendedVersionRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> OptimizeResponse:
+    """根据评审建议优化推荐版本。"""
+    novel_service = NovelService(session)
+    prompt_service = PromptService(session)
+    llm_service = LLMService(session)
+
+    project = await novel_service.ensure_project_owner(request.project_id, current_user.id)
+    chapter = next(
+        (ch for ch in project.chapters if ch.chapter_number == request.chapter_number),
+        None,
+    )
+    if not chapter:
+        raise HTTPException(status_code=404, detail="章节不存在")
+
+    source_content = (request.source_content or "").strip()
+    review_summary = (request.review_summary or "").strip()
+    if not source_content:
+        raise HTTPException(status_code=400, detail="缺少推荐版本正文")
+    if not review_summary:
+        raise HTTPException(status_code=400, detail="缺少评审建议")
+
+    optimizer_prompt = await prompt_service.get_prompt("optimize_recommended_version")
+    if not optimizer_prompt:
+        optimizer_prompt = DEFAULT_RECOMMENDED_VERSION_PROMPT
+
+    optimize_input = {
+        "source_content": source_content,
+        "review_summary": review_summary,
+        "version_number": request.version_number,
+        "version_review": request.version_review or {},
+    }
+
+    logger.info(
+        "用户 %s 开始根据评审优化项目 %s 第 %s 章推荐版本 version=%s",
+        current_user.id,
+        request.project_id,
+        request.chapter_number,
+        request.version_number,
+    )
+
+    try:
+        response = await llm_service.get_llm_response(
+            system_prompt=optimizer_prompt,
+            conversation_history=[{
+                "role": "user",
+                "content": json.dumps(optimize_input, ensure_ascii=False)
+            }],
+            temperature=0.7,
+            user_id=current_user.id,
+            timeout=600.0,
+        )
+
+        optimized_content, optimization_notes = _parse_optimizer_response(response)
+        if not optimized_content.strip():
+            raise HTTPException(status_code=500, detail="优化结果为空，请重试")
+
+        return OptimizeResponse(
+            optimized_content=optimized_content,
+            optimization_notes=optimization_notes,
+            dimension="recommended_version_review",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "项目 %s 第 %s 章推荐版本优化失败: %s",
+            request.project_id,
+            request.chapter_number,
+            exc,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"评审优化过程中发生错误: {str(exc)[:200]}"
         )
 
 
@@ -350,8 +463,7 @@ async def apply_optimization(
     应用优化后的内容到章节，并立即同步伏笔（覆盖本章旧的自动伏笔）。
     """
     novel_service = NovelService(session)
-    
-    # 新版优先使用 JSON body，兼容旧版 query 参数调用
+
     resolved_project_id = request.project_id if request else project_id
     resolved_chapter_number = request.chapter_number if request else chapter_number
     resolved_optimized_content = request.optimized_content if request else optimized_content
@@ -359,23 +471,42 @@ async def apply_optimization(
     if not resolved_project_id or resolved_chapter_number is None or resolved_optimized_content is None:
         raise HTTPException(status_code=422, detail="缺少必填参数: project_id/chapter_number/optimized_content")
 
-    # 验证项目所有权
     project = await novel_service.ensure_project_owner(resolved_project_id, current_user.id)
-    
-    # 获取章节
+
     chapter = next(
         (ch for ch in project.chapters if ch.chapter_number == resolved_chapter_number),
         None
     )
     if not chapter:
         raise HTTPException(status_code=404, detail="章节不存在")
-    
-    if not chapter.selected_version:
-        raise HTTPException(status_code=400, detail="章节尚未选择版本")
-    
-    # 更新内容并同步伏笔。同步函数内部会提交事务，
-    # 这样可保证“正文更新 + 伏笔重建”在同一次请求中生效。
-    chapter.selected_version.content = resolved_optimized_content
+
+    target_version = chapter.selected_version
+    if not target_version and chapter.versions:
+        target_version = sorted(chapter.versions, key=lambda item: item.created_at)[-1]
+
+    if target_version:
+        target_version.content = resolved_optimized_content
+        if not chapter.selected_version_id:
+            chapter.selected_version_id = target_version.id
+        chapter.selected_version = target_version
+    else:
+        target_version = ChapterVersion(
+            chapter_id=chapter.id,
+            content=resolved_optimized_content,
+            version_label="optimized",
+        )
+        session.add(target_version)
+        await session.flush()
+        chapter.selected_version_id = target_version.id
+        chapter.selected_version = target_version
+
+    chapter.status = ChapterGenerationStatus.SUCCESSFUL.value
+    chapter.generation_progress = 100
+    chapter.generation_step = "completed"
+    chapter.generation_step_index = 7
+    chapter.generation_step_total = 7
+    chapter.word_count = len(resolved_optimized_content or "")
+
     try:
         from .writer import _sync_foreshadowings_for_chapter
 
@@ -394,7 +525,7 @@ async def apply_optimization(
             exc,
         )
         raise HTTPException(status_code=500, detail="优化内容保存失败：伏笔同步异常，请重试")
-    
+
     logger.info(
         "用户 %s 应用了项目 %s 第 %s 章的优化内容并同步伏笔 created=%s revealed=%s developing=%s",
         current_user.id,
@@ -404,7 +535,7 @@ async def apply_optimization(
         sync_stats.get("revealed", 0),
         sync_stats.get("developing", 0),
     )
-    
+
     return {
         "status": "success",
         "message": "优化内容已应用，伏笔已同步",

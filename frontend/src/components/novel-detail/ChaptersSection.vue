@@ -82,15 +82,17 @@
           <!-- Header with Status and Tabs -->
           <header class="px-6 py-4 border-b border-slate-200 bg-slate-50/50">
             <div class="flex items-start justify-between gap-4 mb-3">
-              <div class="flex-1">
-                <h4 class="text-xl font-bold text-slate-900">{{ selectedChapter.title || `第${selectedChapter.chapter_number}章` }}</h4>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <h4 class="text-xl font-bold text-slate-900">{{ selectedChapter.title || `第${selectedChapter.chapter_number}章` }}</h4>
+                </div>
                 <div class="flex items-center gap-3 mt-1.5">
                   <span class="text-sm text-slate-500">第 {{ selectedChapter.chapter_number }} 章</span>
                   <span class="text-sm text-slate-400">·</span>
                   <span class="text-sm text-slate-500">{{ calculateWordCount(selectedChapter.content) }} 字</span>
                 </div>
               </div>
-              <div class="flex items-center gap-2">
+              <div class="flex items-center gap-2 flex-wrap justify-end">
                 <button
                   class="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors duration-200"
                   :class="selectedChapter?.content ? 'border-indigo-200 text-indigo-600 hover:bg-indigo-50' : 'border-slate-200 text-slate-400 cursor-not-allowed'"

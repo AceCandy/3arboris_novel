@@ -128,7 +128,7 @@
                 {{ cleanVersionContent(version.content).substring(0, 150) }}...
               </p>
               <div class="mt-2 flex items-center gap-2 md-body-small md-on-surface-variant">
-                <span>约 {{ Math.round(cleanVersionContent(version.content).length / 100) * 100 }} 字</span>
+                <span>{{ getVersionWordCount(version.content) }} 字</span>
                 <span>•</span>
                 <span>{{ version.style || '标准' }}风格</span>
                 <span v-if="isCurrentVersion(index)" style="color: var(--md-success); font-weight: 600;">• 当前选中</span>
@@ -181,6 +181,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { Chapter, ChapterGenerationResponse, ChapterVersion } from '@/api/novel'
+import { countNonWhitespaceChars } from '@/utils/text'
 
 interface Props {
   selectedChapter: Chapter | null
@@ -241,6 +242,10 @@ const cleanVersionContent = (content: string): string => {
   cleaned = cleaned.replace(/\\t/g, '\t')
   cleaned = cleaned.replace(/\\\\/g, '\\')
   return cleaned
+}
+
+const getVersionWordCount = (content: string): number => {
+  return countNonWhitespaceChars(cleanVersionContent(content))
 }
 
 const parseMarkdown = (text: string): string => {

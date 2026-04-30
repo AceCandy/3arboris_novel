@@ -11,7 +11,7 @@
             <span class="md-on-surface-variant">•</span>
             {{ version?.style || '标准' }}风格
             <span class="md-on-surface-variant">•</span>
-            约 {{ Math.round(cleanVersionContent(version?.content || '').length / 100) * 100 }} 字
+            {{ getVersionWordCount(version?.content || '') }} 字
           </p>
         </div>
         <button
@@ -67,7 +67,7 @@
 
 <script setup lang="ts">
 import type { ChapterVersion } from '@/api/novel'
-import { computed } from 'vue'
+import { countNonWhitespaceChars } from '@/utils/text'
 
 interface Props {
   show: boolean
@@ -117,6 +117,10 @@ const cleanVersionContent = (content: string): string => {
   cleaned = cleaned.replace(/\\t/g, '\t')
   cleaned = cleaned.replace(/\\\\/g, '\\')
   return cleaned
+}
+
+const getVersionWordCount = (content: string): number => {
+  return countNonWhitespaceChars(cleanVersionContent(content))
 }
 </script>
 

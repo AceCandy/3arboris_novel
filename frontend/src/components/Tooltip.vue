@@ -31,6 +31,7 @@ import { ref, nextTick, computed } from 'vue'
 
 interface Props {
   text?: string
+  showDelay?: number
 }
 
 const props = defineProps<Props>()
@@ -54,7 +55,7 @@ const onMouseEnter = () => {
     showTooltip.value = true
     await nextTick()
     updatePosition()
-  }, 1000) // 延迟1秒显示
+  }, props.showDelay ?? 1000)
 }
 
 const onMouseLeave = () => {

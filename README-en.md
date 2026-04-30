@@ -65,7 +65,7 @@ npm install
 npm run dev
 ```
 
-Open:
+Default access URLs:
 
 - Frontend: `http://127.0.0.1:5173`
 - API: `http://127.0.0.1:8000`
@@ -76,6 +76,15 @@ Optional launcher scripts from repo root:
 - Windows CMD: `dev.bat`
 - PowerShell: `powershell -ExecutionPolicy Bypass -File .\dev.ps1`
 - Bash: `bash ./dev.sh`
+
+Launcher script behavior:
+
+- If `frontend/node_modules` is missing, dependencies are installed automatically
+- If `backend/.venv` is missing, the virtual environment is created automatically
+- If `uvicorn` is missing from the selected Python environment, `backend/requirements.txt` is installed automatically
+- If default ports `8000` or `5173` are occupied, the script switches to the next available port
+- Frontend and backend dev servers listen on `0.0.0.0`, so they can be reached from other devices on the local network
+- The script prints the local access URL and the effective API proxy target after startup
 
 ### Docker (local)
 

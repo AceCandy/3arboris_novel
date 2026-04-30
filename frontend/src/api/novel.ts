@@ -338,6 +338,15 @@ export interface OptimizeRequest {
   additional_notes?: string
 }
 
+export interface OptimizeRecommendedVersionRequest {
+  project_id: string
+  chapter_number: number
+  source_content: string
+  review_summary: string
+  version_number?: number
+  version_review?: Record<string, unknown>
+}
+
 export interface OptimizeResponse {
   optimized_content: string
   optimization_notes: string
@@ -365,6 +374,16 @@ export class OptimizerAPI {
    */
   static async optimizeChapter(optimizeReq: OptimizeRequest): Promise<OptimizeResponse> {
     return request(`${OPTIMIZER_BASE}/optimize`, {
+      method: 'POST',
+      body: JSON.stringify(optimizeReq)
+    })
+  }
+
+  /**
+   * 根据 AI 评审建议优化推荐版本
+   */
+  static async optimizeRecommendedVersion(optimizeReq: OptimizeRecommendedVersionRequest): Promise<OptimizeResponse> {
+    return request(`${OPTIMIZER_BASE}/optimize-recommended-version`, {
       method: 'POST',
       body: JSON.stringify(optimizeReq)
     })

@@ -89,10 +89,18 @@ Bash:
 bash ./dev.sh
 ```
 
+Helper script behavior:
+
+- If `frontend/node_modules` is missing, frontend dependencies are installed automatically.
+- If `backend/.venv` is missing, the backend virtual environment is created automatically.
+- If the selected Python environment is missing `uvicorn`, backend dependencies from `backend/requirements.txt` are installed automatically.
+- If default ports `8000` or `5173` are occupied, the scripts switch to the next available port.
+- Frontend and backend listen on `0.0.0.0`, so the dev environment can be opened from other devices on the local network.
+- After startup, the scripts print the local frontend URL and the effective local API proxy target.
+
 Notes:
 
 - `dev.ps1` starts the frontend through `cmd.exe /c npm.cmd run dev`, which avoids common PowerShell npm shim issues on Windows.
-- If `frontend/node_modules` does not exist, install frontend dependencies first.
 - If `backend/.env` is missing, the backend may start but core features will not be usable until configuration is completed.
 
 ## 3. Local Docker deployment
@@ -259,7 +267,8 @@ Even when the backend has default models configured, the current frontend flow s
 
 If the frontend opens but keeps loading, check these first:
 
-- Backend is actually running on port 8000
+- Backend is actually running on the printed backend port
+- The printed local API proxy target is reachable
 - `/api/auth/options` is reachable
 - Current login state is valid
 

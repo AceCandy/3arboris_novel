@@ -19,11 +19,36 @@
                 {{ isChapterCompleted(selectedChapterNumber) ? '已完成' : '未完成' }}
               </span>
             </div>
-            <h3 class="md-title-medium md-on-surface mb-1">{{ selectedChapterOutline?.title || '未知标题' }}</h3>
+            <div class="flex items-center gap-3 mb-1 flex-wrap">
+              <Tooltip :text="chapterTitleTooltipText" :show-delay="150">
+                <button
+                  type="button"
+                  class="md-title-medium md-on-surface p-0 bg-transparent border-0 appearance-none text-left hover:opacity-80 transition-opacity cursor-pointer"
+                  @click="copySelectedChapterTitle"
+                  @mouseleave="resetChapterTitleTooltip"
+                >
+                  {{ selectedChapterOutline?.title || '未知标题' }}
+                </button>
+              </Tooltip>
+              <span class="md-body-small md-on-surface-variant whitespace-nowrap">
+                {{ selectedChapterWordCount }} 字
+              </span>
+            </div>
             <p class="md-body-small md-on-surface-variant">{{ selectedChapterOutline?.summary || '暂无章节描述' }}</p>
           </div>
 
           <div class="flex items-center gap-2">
+            <button
+              v-if="isChapterCompleted(selectedChapterNumber)"
+              @click="copySelectedChapterContent"
+              :disabled="!hasSelectedChapterContent"
+              class="md-btn md-btn-outlined md-ripple flex items-center gap-2 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V5a2 2 0 012-2h6a2 2 0 012 2v6m-8 8h6a2 2 0 002-2v-6a2 2 0 00-2-2h-6a2 2 0 00-2 2v6a2 2 0 002 2zm-5-5h6a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2z"></path>
+              </svg>
+              复制正文
+            </button>
             <button
               v-if="isChapterCompleted(selectedChapterNumber)"
               @click="openEditModal"
@@ -100,7 +125,7 @@
               :disabled="isSaving"
             ></textarea>
             <div class="md-body-small md-on-surface-variant mt-2">
-              字数统计: {{ editingContent.length }}
+              字数统计: {{ editingWordCount }}
             </div>
           </div>
         </div>
@@ -132,8 +157,10 @@
 
 <script setup lang="ts">
 import { computed, ref, watch, onUnmounted } from 'vue'
+import Tooltip from '@/components/Tooltip.vue'
 import { globalAlert } from '@/composables/useAlert'
 import type { Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion, NovelProject } from '@/api/novel'
+import { countNonWhitespaceChars } from '@/utils/text'
 import WorkspaceInitial from './workspace/WorkspaceInitial.vue'
 import ChapterGenerating from './workspace/ChapterGenerating.vue'
 import VersionSelector from './workspace/VersionSelector.vue'
@@ -173,6 +200,66 @@ const confirmRegenerateChapter = async () => {
   const confirmed = await globalAlert.showConfirm('重新生成会覆盖当前章节的现有内容，确定继续吗？', '重新生成确认')
   if (confirmed) {
     emit('regenerateChapter')
+  }
+}
+
+const copyTextLegacy = (text: string): boolean => {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', 'readonly')
+  textarea.style.position = 'fixed'
+  textarea.style.top = '-9999px'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+
+  let copied = false
+  try {
+    copied = document.execCommand('copy')
+  } catch (error) {
+    copied = false
+  }
+
+  document.body.removeChild(textarea)
+  return copied
+}
+
+const chapterTitleTooltipText = ref('点击复制')
+
+const resetChapterTitleTooltip = () => {
+  chapterTitleTooltipText.value = '点击复制'
+}
+
+const copyText = async (text: string) => {
+  try {
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+
+    return copyTextLegacy(text)
+  } catch (error) {
+    console.error('复制失败:', error)
+    return copyTextLegacy(text)
+  }
+}
+
+const copySelectedChapterTitle = async () => {
+  const title = (selectedChapterOutline.value?.title || '未知标题').trim()
+  if (!title) return
+
+  const copied = await copyText(title)
+  chapterTitleTooltipText.value = copied ? '复制成功' : '复制失败'
+}
+
+const copySelectedChapterContent = async () => {
+  const content = cleanVersionContent(selectedChapter.value?.content || '').trim()
+  if (!content) return
+
+  const copied = await copyText(content)
+  if (!copied) {
+    globalAlert.showError('复制失败，请手动选择文本复制。')
   }
 }
 
@@ -221,6 +308,8 @@ const cleanVersionContent = (content: string): string => {
   return cleaned
 }
 
+const editingWordCount = computed(() => countNonWhitespaceChars(editingContent.value))
+
 const openEditModal = () => {
   if (selectedChapter.value?.content) {
     editingContent.value = cleanVersionContent(selectedChapter.value.content)
@@ -236,7 +325,7 @@ const closeEditModal = () => {
 
 const saveEditedContent = async () => {
   if (!props.selectedChapterNumber || !editingContent.value.trim()) return
-  
+
   isSaving.value = true
   try {
     emit('editChapter', {
@@ -265,6 +354,10 @@ const hasSelectedChapterContent = computed(() => {
   const content = selectedChapter.value?.content
   return typeof content === 'string' && content.trim().length > 0
 })
+
+const selectedChapterWordCount = computed(() =>
+  countNonWhitespaceChars(cleanVersionContent(selectedChapter.value?.content || ''))
+)
 
 const isChapterCompleted = (chapterNumber: number) => {
   if (!props.project?.chapters) return false
@@ -317,10 +410,10 @@ const canGenerateChapter = (chapterNumber: number | null) => {
   if (chapterNumber === null || !props.project?.blueprint?.chapter_outline) return false
 
   const outlines = props.project.blueprint.chapter_outline.sort((a, b) => a.chapter_number - b.chapter_number)
-  
+
   for (const outline of outlines) {
     if (outline.chapter_number >= chapterNumber) break
-    
+
     const chapter = props.project?.chapters.find(ch => ch.chapter_number === outline.chapter_number)
     if (!chapter || chapter.generation_status !== 'successful') {
       return false
@@ -469,7 +562,7 @@ const currentComponentProps = computed(() => {
     }
   }
   if (hasSelectedChapterContent.value) {
-    return { 
+    return {
       selectedChapter: selectedChapter.value,
       projectId: props.project?.id
     }
