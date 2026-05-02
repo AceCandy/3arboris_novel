@@ -109,6 +109,11 @@ SYSTEM_CONFIG_DEFAULTS: list[SystemConfigDefault] = [
         description="每次生成章节的候选版本数量（支持 1~2）。",
     ),
     SystemConfigDefault(
+        key="writer.chapter_word_limit",
+        value_getter=lambda config: _to_optional_str(config.writer_chapter_word_limit),
+        description="章节正文生成目标字数，建议不低于 2200。",
+    ),
+    SystemConfigDefault(
         key="updates.version_info_url",
         value_getter=lambda config: _to_optional_str(config.version_info_url),
         description="远程版本信息 JSON 地址，供 /api/updates/remote-version 优先读取。",

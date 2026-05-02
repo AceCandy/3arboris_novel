@@ -515,6 +515,7 @@ async def apply_optimization(
             project_id=resolved_project_id,
             chapter=chapter,
             content=resolved_optimized_content,
+            user_id=current_user.id,
         )
     except Exception as exc:
         await session.rollback()

@@ -19,6 +19,12 @@ from ..repositories.system_config_repository import SystemConfigRepository
 from ..services.ai_review_service import AIReviewService
 from ..services.chapter_context_service import ChapterContextService
 from ..services.chapter_guardrails import ChapterGuardrails
+from ..services.chapter_word_count_settings import (
+    build_word_count_requirement_text,
+    count_chapter_words,
+    resolve_word_count_requirements,
+    should_compress_chapter,
+)
 from ..services.consistency_service import ConsistencyService, ViolationSeverity
 from ..services.enhanced_writing_flow import EnhancedWritingFlow
 from ..services.enrichment_service import EnrichmentService
@@ -43,8 +49,6 @@ MAX_CHAPTER_VERSION_COUNT = 2
 
 def _clamp_version_count(value: int) -> int:
     return max(MIN_CHAPTER_VERSION_COUNT, min(MAX_CHAPTER_VERSION_COUNT, int(value)))
-DEFAULT_CHAPTER_TARGET_WORD_COUNT = 3000
-MIN_CHAPTER_WORD_COUNT = 2200
 WRITER_GENERATION_MAX_TOKENS = 7000
 
 
@@ -219,7 +223,7 @@ class PipelineOrchestrator:
         if not writer_prompt:
             raise HTTPException(status_code=500, detail="缺少写作提示词，请联系管理员配置")
 
-        prompt_sections = self._build_prompt_sections(
+        prompt_sections = await self._build_prompt_sections(
             writer_blueprint=writer_blueprint,
             previous_summary=history_context["previous_summary"],
             previous_tail=history_context["previous_tail"],
@@ -703,8 +707,8 @@ class PipelineOrchestrator:
         memory_layer = MemoryLayerService(self.session, self.llm_service, self.prompt_service)
         return await memory_layer.get_memory_context(project_id, chapter_number, involved_characters)
 
-    @staticmethod
-    def _build_prompt_sections(
+    async def _build_prompt_sections(
+        self,
         *,
         writer_blueprint: Dict[str, Any],
         previous_summary: str,
@@ -732,6 +736,10 @@ class PipelineOrchestrator:
         if memory_context:
             sections.append(("[记忆层上下文]", memory_context))
 
+        target_word_count, _minimum_word_count = await resolve_word_count_requirements(
+            SystemConfigRepository(self.session)
+        )
+
         sections.extend(
             [
                 ("[上一章摘要]", previous_summary or "暂无（这是第一章）"),
@@ -754,11 +762,8 @@ class PipelineOrchestrator:
                 ("[当前章节目标]", f"标题：{outline_title}\n摘要：{outline_summary}\n写作要求：{writing_notes}"),
                 (
                     "[篇幅与排版要求]",
-                    (
-                        f"目标字数：约 {DEFAULT_CHAPTER_TARGET_WORD_COUNT} 字，"
-                        f"不得少于 {MIN_CHAPTER_WORD_COUNT} 字。"
-                        "段落清晰，尽量保持自然段首行空两格。"
-                    ),
+                    build_word_count_requirement_text(target_word_count)
+                    + "段落清晰，尽量保持自然段首行空两格。",
                 ),
                 ("[禁止角色](本章不允许提及)", forbidden_text),
             ]
@@ -878,11 +883,81 @@ class PipelineOrchestrator:
         if parsed_json is not None:
             metadata["parsed_json"] = parsed_json
 
+        resolved_content = extracted_text or content
+        target_word_count, _minimum_word_count = await resolve_word_count_requirements(
+            SystemConfigRepository(self.session)
+        )
+        resolved_content = await self._compress_chapter_to_word_limit(
+            content=resolved_content,
+            target_word_count=target_word_count,
+            user_id=user_id,
+            chapter_number=chapter_number,
+            version_index=index + 1,
+        )
+        metadata["word_limit"] = {
+            "target": target_word_count,
+            "actual": count_chapter_words(resolved_content),
+        }
+
         return {
             "index": index,
-            "content": extracted_text or content,
+            "content": resolved_content,
             "metadata": metadata,
         }
+
+    async def _compress_chapter_to_word_limit(
+        self,
+        *,
+        content: str,
+        target_word_count: int,
+        user_id: int,
+        chapter_number: int,
+        version_index: int,
+    ) -> str:
+        """当模型明显超出章节目标字数时，做一次只删减不扩写的压缩兜底。"""
+        if not should_compress_chapter(content, target_word_count):
+            return content
+
+        current_word_count = count_chapter_words(content)
+        logger.info(
+            "Pipeline 第 %s 章版本 %s 超出字数上限，开始压缩: current=%s target=%s",
+            chapter_number,
+            version_index,
+            current_word_count,
+            target_word_count,
+        )
+        prompt = f"""
+请把下面小说章节压缩到约 {target_word_count} 字，最多不得超过 {int(target_word_count * 1.1)} 字。
+
+要求：
+- 只删减冗余描写、重复心理活动、过密铺垫，不新增剧情。
+- 保留关键事件、人物关系、冲突转折和结尾钩子。
+- 直接输出压缩后的章节正文，不要解释，不要输出 JSON。
+
+原文字数约 {current_word_count} 字：
+{content}
+""".strip()
+
+        try:
+            response = await self.llm_service.get_llm_response(
+                system_prompt="你是小说章节压缩编辑，只做删减压缩，不新增剧情。",
+                conversation_history=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                user_id=user_id,
+                timeout=300.0,
+                response_format=None,
+                max_tokens=WRITER_GENERATION_MAX_TOKENS,
+            )
+            compressed = unwrap_markdown_json(remove_think_tags(response)).strip()
+            return compressed or content
+        except Exception as exc:
+            logger.warning(
+                "Pipeline 第 %s 章版本 %s 压缩失败，保留原文: %s",
+                chapter_number,
+                version_index,
+                exc,
+            )
+            return content
 
     async def _generate_with_preview(
         self,

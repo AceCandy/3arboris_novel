@@ -60,13 +60,6 @@
             <div class="flex items-center justify-between mb-4">
               <h3 class="md-title-medium font-semibold">章节大纲</h3>
               <div class="flex items-center gap-2">
-                <button
-                  v-if="hasIncompleteChapters"
-                  @click.stop="scrollToFirstIncompleteChapter"
-                  class="md-btn md-btn-text md-ripple"
-                >
-                  定位到未完成
-                </button>
                 <span class="md-chip md-chip-filter selected">
                   {{ totalChapters }} 章
                 </span>
@@ -306,11 +299,6 @@ const totalChapters = computed(() => {
   return props.project?.blueprint?.chapter_outline?.length || 0
 })
 
-const hasIncompleteChapters = computed(() => {
-  if (!props.project?.blueprint?.chapter_outline) return false
-  return props.project.blueprint.chapter_outline.some(ch => !isChapterCompleted(ch.chapter_number))
-})
-
 function toggleSelection(chapterNumber: number) {
   if (isChapterCompleted(chapterNumber)) return
   const index = selectedForDeletion.value.indexOf(chapterNumber)
@@ -378,6 +366,10 @@ const scrollToFirstIncompleteChapter = async () => {
     element.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
 }
+
+defineExpose({
+  scrollToFirstIncompleteChapter,
+})
 
 // 章节状态检查
 const isChapterCompleted = (chapterNumber: number) => {

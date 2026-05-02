@@ -24,6 +24,17 @@
 
         <!-- 右侧：操作按钮 -->
         <div class="flex items-center gap-1 sm:gap-2">
+          <button
+            v-if="hasIncompleteChapters"
+            @click="$emit('locateIncomplete')"
+            class="md-btn md-btn-tonal md-ripple flex items-center gap-2"
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span class="hidden sm:inline">定位到未完成</span>
+            <span class="sm:hidden">未完成</span>
+          </button>
           <button @click="$emit('viewProjectDetail')" class="md-btn md-btn-text md-ripple flex items-center gap-2">
             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
               <path d="M10 12a2 2 0 100-4 2 2 0 000 4z"></path>
@@ -70,9 +81,10 @@ interface Props {
   progress: number
   completedChapters: number
   totalChapters: number
+  hasIncompleteChapters: boolean
 }
 
 defineProps<Props>()
 
-defineEmits(['goBack', 'viewProjectDetail', 'toggleSidebar'])
+defineEmits(['goBack', 'viewProjectDetail', 'toggleSidebar', 'locateIncomplete'])
 </script>

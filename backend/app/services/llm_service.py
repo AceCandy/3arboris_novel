@@ -101,6 +101,25 @@ class LLMService:
         ]
         return await self._stream_and_collect(messages, temperature=temperature, user_id=user_id, timeout=timeout)
 
+    async def _get_user_llm_config_record(self, user_id: Optional[int]):
+        """统一校验并读取用户级 LLM 配置，禁止回退系统默认配置。"""
+        if not user_id:
+            logger.warning("缺少 user_id，拒绝回退到默认 LLM 配置")
+            raise HTTPException(
+                status_code=400,
+                detail="缺少用户上下文，无法读取用户级 LLM 配置。系统默认 LLM 配置已禁用，请重新登录后在模型设置中保存用户级配置。",
+            )
+
+        config = await self.llm_repo.get_by_user(user_id)
+        if not config:
+            logger.warning("用户 %s 未配置用户级 LLM 设置", user_id)
+            raise HTTPException(
+                status_code=400,
+                detail="请先在模型设置中保存用户级 LLM 配置。系统默认 LLM 配置已禁用。",
+            )
+
+        return config
+
     async def _stream_and_collect(
         self,
         messages: List[Dict[str, str]],
@@ -237,24 +256,25 @@ class LLMService:
         *,
         require_api_key: bool,
     ) -> Dict[str, Optional[str]]:
-        if user_id:
-            config = await self.llm_repo.get_by_user(user_id)
-            if config and (config.llm_provider_api_key or not require_api_key):
-                return {
-                    "api_key": config.llm_provider_api_key,
-                    "base_url": config.llm_provider_url,
-                    "model": config.llm_provider_model,
-                }
+        config = await self._get_user_llm_config_record(user_id)
 
-        api_key = await self._get_config_value("llm.api_key")
-        base_url = await self._get_config_value("llm.base_url")
-        model = await self._get_config_value("llm.model")
+        api_key = (config.llm_provider_api_key or "").strip() or None
+        base_url = (config.llm_provider_url or "").strip() or None
+        model = (config.llm_provider_model or "").strip() or None
 
+        missing_fields: List[str] = []
+        if not base_url:
+            missing_fields.append("API URL")
         if require_api_key and not api_key:
-            logger.error("未配置默认 LLM API Key，且用户 %s 未设置自定义 API Key", user_id)
+            missing_fields.append("API Key")
+        if not model:
+            missing_fields.append("Model")
+
+        if missing_fields:
+            logger.warning("用户 %s 的用户级 LLM 配置不完整: missing=%s", user_id, ",".join(missing_fields))
             raise HTTPException(
-                status_code=500,
-                detail="未配置默认 LLM API Key，请联系管理员配置系统默认 API Key 或在个人设置中配置自定义 API Key"
+                status_code=400,
+                detail=f"请先在模型设置中补全用户级 LLM 配置：{'、'.join(missing_fields)}。系统默认 LLM 配置已禁用。",
             )
 
         return {"api_key": api_key, "base_url": base_url, "model": model}
@@ -373,11 +393,12 @@ class LLMService:
         model: Optional[str] = None,
     ) -> List[float]:
         """生成文本向量，用于章节 RAG 检索，支持 openai 与 ollama 双提供方。"""
-        user_llm_config = await self.llm_repo.get_by_user(user_id) if user_id else None
-        user_embedding_model = user_llm_config.embedding_provider_model if user_llm_config else None
-        user_embedding_base_url = user_llm_config.embedding_provider_url if user_llm_config else None
-        user_embedding_api_key = user_llm_config.embedding_provider_api_key if user_llm_config else None
-        user_llm_base_url = user_llm_config.llm_provider_url if user_llm_config else None
+        user_llm_config = await self._get_user_llm_config_record(user_id)
+        user_embedding_model = (user_llm_config.embedding_provider_model or "").strip() or None
+        user_embedding_base_url = (user_llm_config.embedding_provider_url or "").strip() or None
+        user_embedding_api_key = (user_llm_config.embedding_provider_api_key or "").strip() or None
+        user_llm_base_url = (user_llm_config.llm_provider_url or "").strip() or None
+        user_llm_api_key = (user_llm_config.llm_provider_api_key or "").strip() or None
         user_embedding_provider_format = (
             (user_llm_config.embedding_provider_format or "").strip().lower()
             if user_llm_config
@@ -389,28 +410,26 @@ class LLMService:
         if provider not in {"openai", "ollama"}:
             logger.error("非法 embedding.provider 配置: %s", provider)
             raise HTTPException(status_code=500, detail="embedding.provider 仅支持 openai 或 ollama")
-        default_model = (
-            user_embedding_model
-            or await self._get_config_value("ollama.embedding_model")
-            or "nomic-embed-text:latest"
-            if provider == "ollama"
-            else user_embedding_model
-            or await self._get_config_value("embedding.model")
-            or "text-embedding-3-large"
-        )
-        target_model = model or default_model
+        target_model = model or user_embedding_model
+        if not target_model:
+            logger.warning("用户 %s 未配置用户级向量模型", user_id)
+            raise HTTPException(
+                status_code=400,
+                detail="请先在模型设置中补全用户级向量模型配置：向量 Model。系统默认向量配置已禁用。",
+            )
 
         if provider == "ollama":
             if OllamaAsyncClient is None:
                 logger.error("未安装 ollama 依赖，无法调用本地嵌入模型。")
                 raise HTTPException(status_code=500, detail="缺少 Ollama 依赖，请先安装 ollama 包。")
 
-            raw_base_url = (
-                user_embedding_base_url
-                or user_llm_base_url
-                or await self._get_config_value("ollama.embedding_base_url")
-                or await self._get_config_value("embedding.base_url")
-            )
+            raw_base_url = user_embedding_base_url or user_llm_base_url
+            if not raw_base_url:
+                logger.warning("用户 %s 未配置用户级向量 API URL", user_id)
+                raise HTTPException(
+                    status_code=400,
+                    detail="请先在模型设置中补全用户级向量模型配置：向量 API URL，或启用复用主模型 API URL。系统默认向量配置已禁用。",
+                )
             base_url = self._normalize_ollama_host(raw_base_url)
             if raw_base_url and raw_base_url != base_url:
                 logger.warning(
@@ -428,14 +447,14 @@ class LLMService:
             if not embedding:
                 return []
         else:
-            config = await self._resolve_llm_config_with_policy(user_id, require_api_key=False)
-            api_key = user_embedding_api_key or await self._get_config_value("embedding.api_key") or config["api_key"]
-            base_url = (
-                user_embedding_base_url
-                or user_llm_base_url
-                or await self._get_config_value("embedding.base_url")
-                or config.get("base_url")
-            )
+            api_key = user_embedding_api_key or user_llm_api_key
+            base_url = user_embedding_base_url or user_llm_base_url
+            if not base_url:
+                logger.warning("用户 %s 未配置用户级向量 API URL", user_id)
+                raise HTTPException(
+                    status_code=400,
+                    detail="请先在模型设置中补全用户级向量模型配置：向量 API URL，或启用复用主模型 API URL。系统默认向量配置已禁用。",
+                )
             if api_key:
                 client = AsyncOpenAI(api_key=api_key, base_url=base_url)
                 try:

@@ -3,7 +3,7 @@
   <section class="md-card md-card-elevated llm-settings">
     <header class="llm-settings__header">
       <h2 class="md-headline-small llm-settings__title">LLM 配置</h2>
-      <p class="md-body-medium llm-settings__subtitle">建议使用自己的 API URL 与 API Key，确保模型可控。</p>
+      <p class="md-body-medium llm-settings__subtitle">必须配置用户级 API URL、API Key 与 Model，系统不再读取默认 LLM 配置。</p>
     </header>
 
     <div v-if="saveFeedback.message" :class="['llm-feedback', `is-${saveFeedback.type}`]">
@@ -33,7 +33,7 @@
                 v-model="config.llm_provider_api_key"
                 :type="showApiKey ? 'text' : 'password'"
                 class="md-text-field-input"
-                placeholder="留空则使用默认 Key"
+                placeholder="请输入用户级 API Key"
               >
               <button type="button" class="llm-inline-action" @click="toggleApiKeyVisibility">
                 {{ showApiKey ? '隐藏' : '显示' }}
@@ -50,7 +50,7 @@
               v-model="config.llm_provider_model"
               type="text"
               class="md-text-field-input"
-              placeholder="留空则使用默认模型"
+              placeholder="请输入用户级模型名"
               @focus="handleModelFocus"
             >
           </label>

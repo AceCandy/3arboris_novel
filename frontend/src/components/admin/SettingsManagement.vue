@@ -36,6 +36,13 @@
             </n-tag>
           </div>
           <div class="health-item">
+            <div class="health-label">章节目标字数</div>
+            <div class="health-value">{{ chapterWordLimit }}</div>
+            <n-tag :type="chapterWordLimitHealthy ? 'success' : 'error'" :bordered="false">
+              {{ chapterWordLimitHealthy ? '有效' : '过低' }}
+            </n-tag>
+          </div>
+          <div class="health-item">
             <div class="health-label">版本信息源地址</div>
             <div class="health-value health-value-url" :title="normalizedVersionInfoUrl || '未配置'">
               {{ normalizedVersionInfoUrl || '未配置' }}
@@ -86,6 +93,42 @@
             </div>
             <n-space justify="end">
               <n-button type="primary" :loading="chapterVersionSaving" @click="saveChapterVersionCount">
+                保存设置
+              </n-button>
+            </n-space>
+          </n-form>
+        </n-spin>
+      </n-card>
+
+      <n-card :bordered="false" class="top-settings-card">
+        <template #header>
+          <div class="card-header">
+            <div>
+              <span class="card-title">章节字数限制</span>
+              <p class="card-subtitle">控制当前章节生成提示里的目标字数，影响正文篇幅。</p>
+            </div>
+            <n-tag :bordered="false" type="info">托管项</n-tag>
+          </div>
+        </template>
+        <n-spin :show="configLoading || chapterWordLimitSaving">
+          <n-alert v-if="chapterWordLimitError" type="error" closable @close="chapterWordLimitError = null">
+            {{ chapterWordLimitError }}
+          </n-alert>
+          <n-form label-placement="top" class="version-form">
+            <n-form-item label="每章目标字数（建议不低于 2200）">
+              <n-input-number
+                v-model:value="chapterWordLimit"
+                :min="2200"
+                :step="100"
+                :precision="0"
+                placeholder="请输入目标字数"
+              />
+            </n-form-item>
+            <div class="form-hint">
+              优先级：系统配置 <code>writer.chapter_word_limit</code> &gt; 环境变量 <code>WRITER_CHAPTER_WORD_LIMIT</code>
+            </div>
+            <n-space justify="end">
+              <n-button type="primary" :loading="chapterWordLimitSaving" @click="saveChapterWordLimit">
                 保存设置
               </n-button>
             </n-space>
@@ -283,13 +326,17 @@ const { showAlert } = useAlert()
 
 const WRITER_VERSION_CONFIG_KEY = 'writer.chapter_versions'
 const LEGACY_WRITER_VERSION_CONFIG_KEY = 'writer.version_count'
+const WRITER_WORD_LIMIT_CONFIG_KEY = 'writer.chapter_word_limit'
 const VERSION_INFO_URL_CONFIG_KEY = 'updates.version_info_url'
 const LEGACY_VERSION_INFO_URL_CONFIG_KEY = 'updates.github_json_url'
 const MIN_CHAPTER_VERSION_COUNT = 1
 const MAX_CHAPTER_VERSION_COUNT = 2
+const MIN_CHAPTER_WORD_LIMIT = 2200
+const DEFAULT_CHAPTER_WORD_LIMIT = 3000
 const MANAGED_CONFIG_KEYS = new Set<string>([
   WRITER_VERSION_CONFIG_KEY,
   LEGACY_WRITER_VERSION_CONFIG_KEY,
+  WRITER_WORD_LIMIT_CONFIG_KEY,
   VERSION_INFO_URL_CONFIG_KEY,
   LEGACY_VERSION_INFO_URL_CONFIG_KEY
 ])
@@ -297,6 +344,9 @@ const MANAGED_CONFIG_KEYS = new Set<string>([
 const chapterVersionCount = ref<number>(MIN_CHAPTER_VERSION_COUNT)
 const chapterVersionSaving = ref(false)
 const chapterVersionError = ref<string | null>(null)
+const chapterWordLimit = ref<number>(DEFAULT_CHAPTER_WORD_LIMIT)
+const chapterWordLimitSaving = ref(false)
+const chapterWordLimitError = ref<string | null>(null)
 const versionInfoUrl = ref('')
 const versionSourceSaving = ref(false)
 const versionSourceError = ref<string | null>(null)
@@ -332,6 +382,7 @@ const normalizedVersionInfoUrl = computed(() => normalizeConfigText(versionInfoU
 const chapterVersionHealthy = computed(
   () => chapterVersionCount.value >= MIN_CHAPTER_VERSION_COUNT && chapterVersionCount.value <= MAX_CHAPTER_VERSION_COUNT
 )
+const chapterWordLimitHealthy = computed(() => chapterWordLimit.value >= MIN_CHAPTER_WORD_LIMIT)
 const versionSourceHealthy = computed(
   () => normalizedVersionInfoUrl.value.length > 0 && isHttpUrl(normalizedVersionInfoUrl.value)
 )
@@ -394,6 +445,14 @@ const normalizeChapterVersionCount = (value: unknown): number => {
     return MIN_CHAPTER_VERSION_COUNT
   }
   return Math.max(MIN_CHAPTER_VERSION_COUNT, Math.min(MAX_CHAPTER_VERSION_COUNT, parsed))
+}
+
+const normalizeChapterWordLimit = (value: unknown): number => {
+  const parsed = Number.parseInt(String(value ?? '').trim(), 10)
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_CHAPTER_WORD_LIMIT
+  }
+  return Math.max(MIN_CHAPTER_WORD_LIMIT, parsed)
 }
 
 const normalizeConfigText = (value: unknown): string => String(value ?? '').trim()
@@ -494,6 +553,12 @@ const syncChapterVersionCountFromConfigs = () => {
   chapterVersionCount.value = normalizeChapterVersionCount(rawValue)
 }
 
+const syncChapterWordLimitFromConfigs = () => {
+  const current = configs.value.find((item) => item.key === WRITER_WORD_LIMIT_CONFIG_KEY)
+  const rawValue = current?.value ?? String(DEFAULT_CHAPTER_WORD_LIMIT)
+  chapterWordLimit.value = normalizeChapterWordLimit(rawValue)
+}
+
 const syncVersionSourceFromConfigs = () => {
   const versionInfoConfig = configs.value.find((item) => item.key === VERSION_INFO_URL_CONFIG_KEY)
     || configs.value.find((item) => item.key === LEGACY_VERSION_INFO_URL_CONFIG_KEY)
@@ -502,6 +567,7 @@ const syncVersionSourceFromConfigs = () => {
 
 const syncDerivedFormsFromConfigs = () => {
   syncChapterVersionCountFromConfigs()
+  syncChapterWordLimitFromConfigs()
   syncVersionSourceFromConfigs()
 }
 
@@ -545,6 +611,26 @@ const saveChapterVersionCount = async () => {
     showAlert(chapterVersionError.value, 'error')
   } finally {
     chapterVersionSaving.value = false
+  }
+}
+
+const saveChapterWordLimit = async () => {
+  chapterWordLimitError.value = null
+  chapterWordLimitSaving.value = true
+  try {
+    const normalized = normalizeChapterWordLimit(chapterWordLimit.value)
+    chapterWordLimit.value = normalized
+    const updated = await AdminAPI.upsertSystemConfig(WRITER_WORD_LIMIT_CONFIG_KEY, {
+      value: String(normalized),
+      description: '章节正文生成目标字数，建议不低于 2200。'
+    })
+    upsertConfigInList(updated)
+    showAlert('章节字数限制已更新', 'success')
+  } catch (err) {
+    chapterWordLimitError.value = err instanceof Error ? err.message : '保存章节字数限制失败'
+    showAlert(chapterWordLimitError.value, 'error')
+  } finally {
+    chapterWordLimitSaving.value = false
   }
 }
 
@@ -628,6 +714,14 @@ const submitConfig = async () => {
     const parsed = Number.parseInt(normalizedValue, 10)
     if (!Number.isFinite(parsed) || parsed < MIN_CHAPTER_VERSION_COUNT || parsed > MAX_CHAPTER_VERSION_COUNT) {
       showAlert('章节版本数仅支持设置为 1 或 2', 'error')
+      return
+    }
+  }
+
+  if (normalizedKey === WRITER_WORD_LIMIT_CONFIG_KEY) {
+    const parsed = Number.parseInt(normalizedValue, 10)
+    if (!Number.isFinite(parsed) || parsed < MIN_CHAPTER_WORD_LIMIT) {
+      showAlert('章节字数限制不能低于 2200', 'error')
       return
     }
   }

@@ -6,9 +6,11 @@
       :progress="progress"
       :completed-chapters="completedChapters"
       :total-chapters="totalChapters"
+      :has-incomplete-chapters="hasIncompleteChapters"
       @go-back="goBack"
       @view-project-detail="viewProjectDetail"
       @toggle-sidebar="toggleSidebar"
+      @locate-incomplete="locateFirstIncompleteChapter"
     />
 
     <!-- 主要内容区域 -->
@@ -38,6 +40,7 @@
       <!-- 主要内容 -->
       <div v-else-if="project" class="h-full flex gap-6">
         <WDSidebar
+          ref="sidebarRef"
           :project="project"
           :sidebar-open="sidebarOpen"
           :selected-chapter-number="selectedChapterNumber"
@@ -191,6 +194,7 @@ const chapterGenerationResult = ref<ChapterGenerationResponse | null>(null)
 const selectedVersionIndex = ref<number>(0)
 const generatingChapter = ref<number | null>(null)
 const sidebarOpen = ref(false)
+const sidebarRef = ref<InstanceType<typeof WDSidebar> | null>(null)
 const showVersionDetailModal = ref(false)
 const detailVersionIndex = ref<number>(0)
 const showEvaluationDetailModal = ref(false)
@@ -248,6 +252,14 @@ const totalChapters = computed(() => {
 
 const completedChapters = computed(() => {
   return project.value?.chapters?.filter(ch => ch.content)?.length || 0
+})
+
+const hasIncompleteChapters = computed(() => {
+  if (!project.value?.blueprint?.chapter_outline) return false
+  return project.value.blueprint.chapter_outline.some((outline) => {
+    const chapter = project.value?.chapters.find(ch => ch.chapter_number === outline.chapter_number)
+    return chapter?.generation_status !== 'successful'
+  })
 })
 
 const isCurrentVersion = (versionIndex: number) => {
@@ -644,6 +656,10 @@ const toggleSidebar = () => {
 
 const closeSidebar = () => {
   sidebarOpen.value = false
+}
+
+const locateFirstIncompleteChapter = () => {
+  sidebarRef.value?.scrollToFirstIncompleteChapter()
 }
 
 const loadProject = async () => {

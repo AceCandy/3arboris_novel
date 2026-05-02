@@ -65,13 +65,17 @@ from ...services.review_context_builder import ReviewContextBuilder
 from ...utils.json_utils import remove_think_tags, unwrap_markdown_json
 from ...repositories.system_config_repository import SystemConfigRepository
 from ...services.pipeline_orchestrator import PipelineOrchestrator
+from ...services.chapter_word_count_settings import (
+    build_word_count_requirement_text,
+    count_chapter_words,
+    resolve_word_count_requirements,
+    should_compress_chapter,
+)
 
 router = APIRouter(prefix="/api/writer", tags=["Writer"])
 logger = logging.getLogger(__name__)
 # 使用固定 UTC+8，避免在 Windows/Python 环境缺少 tzdata 时 ZoneInfo 初始化失败。
 CN_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
-DEFAULT_CHAPTER_TARGET_WORD_COUNT = 3000
-MIN_CHAPTER_WORD_COUNT = 2200
 WRITER_GENERATION_MAX_TOKENS = 7000
 MIN_CHAPTER_VERSION_COUNT = 1
 MAX_CHAPTER_VERSION_COUNT = 2
@@ -135,6 +139,63 @@ def _extract_tail_excerpt(text: Optional[str], limit: int = 500) -> str:
     return stripped[-limit:]
 
 
+async def _compress_chapter_to_word_limit(
+    *,
+    llm_service: LLMService,
+    content: str,
+    target_word_count: int,
+    user_id: int,
+    project_id: str,
+    chapter_number: int,
+    version_index: int,
+) -> str:
+    """当模型明显超出章节目标字数时，做一次只删减不扩写的压缩兜底。"""
+    if not should_compress_chapter(content, target_word_count):
+        return content
+
+    current_word_count = count_chapter_words(content)
+    logger.info(
+        "项目 %s 第 %s 章版本 %s 超出字数上限，开始压缩: current=%s target=%s",
+        project_id,
+        chapter_number,
+        version_index,
+        current_word_count,
+        target_word_count,
+    )
+    prompt = f"""
+请把下面小说章节压缩到约 {target_word_count} 字，最多不得超过 {int(target_word_count * 1.1)} 字。
+
+要求：
+- 只删减冗余描写、重复心理活动、过密铺垫，不新增剧情。
+- 保留关键事件、人物关系、冲突转折和结尾钩子。
+- 直接输出压缩后的章节正文，不要解释，不要输出 JSON。
+
+原文字数约 {current_word_count} 字：
+{content}
+""".strip()
+
+    try:
+        response = await llm_service.get_llm_response(
+            system_prompt="你是小说章节压缩编辑，只做删减压缩，不新增剧情。",
+            conversation_history=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            user_id=user_id,
+            timeout=300.0,
+            response_format=None,
+            max_tokens=WRITER_GENERATION_MAX_TOKENS,
+        )
+        compressed = unwrap_markdown_json(remove_think_tags(response)).strip()
+        return compressed or content
+    except Exception as exc:
+        logger.warning(
+            "项目 %s 第 %s 章版本 %s 压缩失败，保留原文: %s",
+            project_id,
+            chapter_number,
+            version_index,
+            exc,
+        )
+        return content
+
 async def _build_review_context(
     *,
     session: AsyncSession,
@@ -142,6 +203,7 @@ async def _build_review_context(
     project,
     project_id: str,
     chapter_number: int,
+    user_id: int,
     chapter_mission: Optional[dict] = None,
     chapter_content: Optional[str] = None,
 ) -> Dict[str, object]:
@@ -246,6 +308,7 @@ async def _build_review_context(
         enhanced_context = await context_builder.build_review_context(
             project_id=project_id,
             chapter_number=chapter_number,
+            user_id=user_id,
             chapter_content=chapter_content,
             base_context=base_context,
         )
@@ -1257,14 +1320,14 @@ async def generate_chapter(
     await session.commit()
 
     outlines_map = {item.chapter_number: item for item in project.outlines}
-    
+
     # ========== 1. 收集历史上下文 ==========
     completed_chapters = []
     completed_summaries = []
     latest_prev_number = -1
     previous_summary_text = ""
     previous_tail_excerpt = ""
-    
+
     for existing in project.chapters:
         if existing.chapter_number >= request.chapter_number:
             continue
@@ -1471,12 +1534,16 @@ async def generate_chapter(
 
     # 使用裁剪后的蓝图（移除了 full_synopsis 和未登场角色）
     blueprint_text = json.dumps(writer_blueprint, ensure_ascii=False, indent=2)
-    
+
     # 构建导演脚本文本
     mission_text = json.dumps(chapter_mission, ensure_ascii=False, indent=2) if chapter_mission else "无导演脚本"
-    
+
     # 构建禁止角色列表
     forbidden_text = json.dumps(forbidden_characters, ensure_ascii=False) if forbidden_characters else "无"
+
+    target_word_count, _minimum_word_count = await resolve_word_count_requirements(
+        SystemConfigRepository(session)
+    )
 
     prompt_sections = [
         ("[世界蓝图](JSON，已裁剪)", blueprint_text),
@@ -1488,11 +1555,8 @@ async def generate_chapter(
         ("[当前章节目标]", f"标题：{outline_title}\n摘要：{outline_summary}\n写作要求：{writing_notes}"),
         (
             "[篇幅与排版要求]",
-            (
-                f"目标字数：约 {DEFAULT_CHAPTER_TARGET_WORD_COUNT} 字，"
-                f"不得少于 {MIN_CHAPTER_WORD_COUNT} 字。"
-                "段落清晰，尽量保持自然段首行空两格。"
-            ),
+            build_word_count_requirement_text(target_word_count)
+            + "段落清晰，尽量保持自然段首行空两格。",
         ),
         ("[禁止角色](本章不允许提及)", forbidden_text),
     ]
@@ -1520,7 +1584,7 @@ async def generate_chapter(
             )
             cleaned = remove_think_tags(response)
             normalized = unwrap_markdown_json(cleaned)
-            
+
             # ========== 7. 护栏检查 ==========
             guardrail_result = guardrails.check(
                 generated_text=normalized,
@@ -1711,7 +1775,20 @@ async def generate_chapter(
                     status_code=502,
                     detail=f"生成章节第 {version_idx} 个版本失败：模型未返回有效正文，请重试。",
                 )
+            candidate = await _compress_chapter_to_word_limit(
+                llm_service=llm_service,
+                content=candidate,
+                target_word_count=target_word_count,
+                user_id=current_user.id,
+                project_id=project_id,
+                chapter_number=request.chapter_number,
+                version_index=version_idx,
+            )
             contents.append(candidate)
+            variant["word_limit"] = {
+                "target": target_word_count,
+                "actual": count_chapter_words(candidate),
+            }
             metadata.append(variant)
         else:
             text = str(variant).strip()
@@ -1726,8 +1803,23 @@ async def generate_chapter(
                     status_code=502,
                     detail=f"生成章节第 {version_idx} 个版本失败：模型返回空内容，请重试。",
                 )
+            text = await _compress_chapter_to_word_limit(
+                llm_service=llm_service,
+                content=text,
+                target_word_count=target_word_count,
+                user_id=current_user.id,
+                project_id=project_id,
+                chapter_number=request.chapter_number,
+                version_index=version_idx,
+            )
             contents.append(text)
-            metadata.append({"raw": variant})
+            metadata.append({
+                "raw": variant,
+                "word_limit": {
+                    "target": target_word_count,
+                    "actual": count_chapter_words(text),
+                },
+            })
 
     # ========== 8. AI Review: 自动评审多版本 ==========
     await _update_generation_progress(progress=86, step="quality_review", step_index=5)
@@ -1824,7 +1916,7 @@ async def select_chapter_version(
         chapter.generation_step_total = 7
         await session.commit()
         raise
-    
+
     # 校验内容是否为空
     if not selected_version.content or len(selected_version.content.strip()) == 0:
         # 回滚状态，不标记为 successful
@@ -1933,6 +2025,7 @@ async def evaluate_chapter(
             project=project,
             project_id=project_id,
             chapter_number=request.chapter_number,
+            user_id=current_user.id,
             chapter_content=chapter_content,
         )
 
@@ -2068,11 +2161,11 @@ async def generate_chapters_outline(
     llm_service = LLMService(session)
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
-    
+
     # 获取蓝图信息
     project_schema = await novel_service._serialize_project(project)
     blueprint_text = json.dumps(project_schema.blueprint.model_dump(), ensure_ascii=False, indent=2)
-    
+
     # 获取已有的章节大纲
     existing_outlines = [
         f"第{o.chapter_number}章 - {o.title}: {o.summary}"
@@ -2102,7 +2195,7 @@ async def generate_chapters_outline(
         temperature=0.7,
         user_id=current_user.id,
     )
-    
+
     cleaned = remove_think_tags(response)
     normalized = unwrap_markdown_json(cleaned)
     try:
@@ -2110,9 +2203,9 @@ async def generate_chapters_outline(
         new_outlines = data.get("chapters", [])
         for item in new_outlines:
             await novel_service.update_or_create_outline(
-                project_id, 
-                item["chapter_number"], 
-                item["title"], 
+                project_id,
+                item["chapter_number"],
+                item["title"],
                 item["summary"]
             )
         await session.commit()
@@ -2132,10 +2225,10 @@ async def edit_chapter_content(
     current_user: UserInDB = Depends(get_current_user),
 ) -> NovelProjectSchema:
     novel_service = NovelService(session)
-    
+
     await novel_service.ensure_project_owner(project_id, current_user.id)
     chapter = await novel_service.get_or_create_chapter(project_id, request.chapter_number)
-    
+
     # 更新内容：优先更新选中版本，否则选最新版本或创建新版本
     target_version = chapter.selected_version
     if not target_version and chapter.versions:
@@ -2156,7 +2249,7 @@ async def edit_chapter_content(
         await session.flush()
         chapter.selected_version_id = target_version.id
         chapter.selected_version = target_version
-    
+
     chapter.status = "successful"
     chapter.generation_progress = 100
     chapter.generation_step = "completed"

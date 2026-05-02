@@ -42,6 +42,7 @@ class ReviewContextBuilder:
         self,
         project_id: str,
         chapter_number: int,
+        user_id: Optional[int] = None,
         chapter_content: Optional[str] = None,
         base_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
@@ -72,7 +73,7 @@ class ReviewContextBuilder:
         # 2. 检索相关章节
         if chapter_content:
             related_chapters = await self._get_related_chapters(
-                project_id, chapter_number, chapter_content
+                project_id, chapter_number, chapter_content, user_id=user_id
             )
             if related_chapters:
                 context["related_chapters"] = related_chapters
@@ -135,17 +136,21 @@ class ReviewContextBuilder:
         current_chapter: int,
         chapter_content: str,
         top_k: int = 5,
+        user_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """检索相关的历史章节"""
         try:
             if not self.vector_store or not chapter_content:
                 logger.info("向量库未启用或章节内容为空，跳过相关章节检索")
                 return []
+            if not user_id:
+                logger.warning("缺少 user_id，跳过相关章节向量检索")
+                return []
 
             # 1. 生成查询向量
             embedding = await self.llm_service.get_embedding(
                 chapter_content[:2000],  # 截取前2000字作为查询文本
-                user_id=0,
+                user_id=user_id,
             )
             if not embedding:
                 logger.warning("生成查询向量失败，跳过相关章节检索")

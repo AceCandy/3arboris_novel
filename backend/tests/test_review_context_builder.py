@@ -206,6 +206,7 @@ async def test_get_related_chapters_merges_chunks_and_summaries():
         current_chapter=5,
         chapter_content="当前章节再次提到神秘信件和钥匙。",
         top_k=5,
+        user_id=42,
     )
 
     assert [item["chapter_number"] for item in result] == [2, 1]
@@ -213,6 +214,9 @@ async def test_get_related_chapters_merges_chunks_and_summaries():
     assert result[0]["relevance_score"] == 0.85
     assert result[0]["matched_content"].startswith("这里出现了神秘信件与钥匙的线索")
     assert all(item["chapter_number"] < 5 for item in result)
-    llm_service.get_embedding.assert_awaited_once()
+    llm_service.get_embedding.assert_awaited_once_with(
+        "当前章节再次提到神秘信件和钥匙。",
+        user_id=42,
+    )
     vector_store.query_chunks.assert_awaited_once()
     vector_store.query_summaries.assert_awaited_once()

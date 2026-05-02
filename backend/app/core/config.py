@@ -88,6 +88,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("WRITER_CHAPTER_VERSION_COUNT", "WRITER_CHAPTER_VERSIONS"),
         description="每次生成章节的候选版本数量（支持 1~2）",
     )
+    writer_chapter_word_limit: int = Field(
+        default=3000,
+        ge=2200,
+        env="WRITER_CHAPTER_WORD_LIMIT",
+        description="章节正文生成目标字数下限配置，低于 2200 会回退默认值",
+    )
     embedding_provider: str = Field(
         default="openai",
         env="EMBEDDING_PROVIDER",
